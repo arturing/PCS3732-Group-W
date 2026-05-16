@@ -2,7 +2,7 @@
 #define LINE_PIN_START 6
 #define COLUMN_PIN_START 2
 #define NUMBER_LINES 8
-#define NUMBER_COLUMNS 2
+#define NUMBER_COLUMNS 4
 
 void setup()
 {
