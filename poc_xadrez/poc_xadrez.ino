@@ -9,9 +9,9 @@ void setup()
 
   Serial.begin(115200);
 
-  for (int columns = COLUMN_PIN_START; columns < NUMBER_COLUMNS; columns++)
+  for (int columns = 0; columns < NUMBER_COLUMNS; columns++)
   {
-    pinMode(COLUMN_PIN_START, INPUT);
+    pinMode(columns+COLUMN_PIN_START, INPUT_PULLUP);
   }
 }
 
@@ -25,10 +25,10 @@ void loop()
   {
     int line_pin = line + LINE_PIN_START;
     pinMode(line_pin, OUTPUT);
-    digitalWrite(line_pin, HIGH);
+    digitalWrite(line_pin, LOW);
 	
     for (int column = 0; column < NUMBER_COLUMNS; column++){
-    	matrix[line][column] = digitalRead(column+COLUMN_PIN_START);
+    	matrix[line][column] = !digitalRead(column+COLUMN_PIN_START);
     }
 
 
