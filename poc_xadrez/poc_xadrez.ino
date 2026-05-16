@@ -1,8 +1,8 @@
 #include <string.h>
-#define LINE_PIN_START 6
+#define LINE_PIN_START 10
 #define COLUMN_PIN_START 2
 #define NUMBER_LINES 8
-#define NUMBER_COLUMNS 4
+#define NUMBER_COLUMNS 8
 
 void setup()
 {
