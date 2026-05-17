@@ -39,18 +39,13 @@ void loop()
 
   if (diff != 0)
   {
-    for (int i = 0; i < NUMBER_LINES; i++)
+	Serial.println();
+    for (int i = NUMBER_LINES - 1; i >= 0; i--)
     {
       for (int j= 0; j < NUMBER_COLUMNS; j++){
-        if (matrix[i][j] != matrix_prev[i][j])
-        {
-          Serial.print("Button index ");
-          Serial.print(i);
-          Serial.print(",");
-          Serial.print(j);
-          Serial.println(" changed state.");
-        }
+          Serial.print(matrix[i][j]);
       }
+	  Serial.println();
     }
     memcpy(matrix_prev, matrix, sizeof(matrix));
   }
