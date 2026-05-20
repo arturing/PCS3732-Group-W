@@ -1,0 +1,52 @@
+direction: down
+
+# Configuração visual básica
+classes: {
+  estado: {
+    shape: rectangle
+    style.border-radius: 5
+  }
+}
+
+# --- DEFINIÇÃO DOS ESTADOS ---
+
+Setup: |md
+  **setup()**
+  Prepara Comunicação usando Pino 8:
+  Serial.begin(115200);
+  pixels.begin();
+| {class: estado}
+
+Vermelho: |md
+  **Estado: Vermelho**
+  pixels.setPixelColor(0, 255, 0, 0);
+  pixels.show();
+| {class: estado; style.fill: "#ffcccc"}
+
+Verde: |md
+  **Estado: Verde**
+  pixels.setPixelColor(0, 0, 255, 0);
+  pixels.show();
+| {class: estado; style.fill: "#ccffcc"}
+
+Amarelo: |md
+  **Estado: Amarelo**
+  pixels.setPixelColor(0, 255, 255, 0);
+  pixels.show();
+| {class: estado; style.fill: "#ffffcc"}
+
+# --- TRANSIÇÕES E TEMPOS ---
+
+Setup -> Vermelho: Início do loop()
+
+Vermelho -> Verde: delay(4000) {
+  style.stroke-dash: 5
+}
+
+Verde -> Amarelo: delay(3000) {
+  style.stroke-dash: 5
+}
+
+Amarelo -> Vermelho: delay(1000) {
+  style.stroke-dash: 5
+}
