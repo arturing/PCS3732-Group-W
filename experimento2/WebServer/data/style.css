@@ -2,89 +2,8 @@ html, body {
   color: #111111; font-family: Arial, ui-sans-serif, sans-serif; font-size: 1em; background-color: #f0f0f0;
 }
 
-body {
-  display: flex;
-  flex-direction: row;
-  justify-content: center;
-  align-items: center;
-  width: 100%;
-  height: 100vh;
-}
-
 #list > div {
   margin: 0 0 0.5rem 0;
 }
 
 a { color: inherit; cursor: pointer; }
-
-.container
-{
-  width: 100%;
-  min-width: 400px;
-  max-width: 1020px;
-  min-height: 600px;
-  max-height: 720px;
-  height: 100vh;
-  align-self: auto;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  background-color: red;
-  justify-content: center;
-  align-items: center;
-  box-sizing: border-box;
-}
-
-.value_sec{
-background-color: pink;
-  width: 85%;
-  height: 85%;
-  padding: 20px;
-  box-sizing: border-box;
-
-  /* Ativa o flexbox no bloco azul para organizar os inputs e botões */
-  display: flex;
-  flex-direction: column; /* Organiza os blocos um abaixo do outro */
-  justify-content: center; /* Centraliza verticalmente */
-  align-items: center;    /* Centraliza horizontalmente */
-  gap: 20px;
-}
-
-.op_select {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.input {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.result-label {
-
-}
-
-/* Esconde o checkbox padrão */
-.check-input {
-  display: none;
-}
-
-/* Estilo do botão */
-.check-label {
-  display: inline-block;
-  padding: 10px 20px;
-  border: 2px solid #ccc;
-  border-radius: 25px; /* Botão arredondado */
-  cursor: pointer;
-  transition: background-color 0.3s, border-color 0.3s;
-}
-
-/* Estilo quando o checkbox está marcado */
-.check-input:checked + .check-label {
-  background-color: #28a745; /* Cor verde para indicar seleção */
-  color: white;
-  border-color: #28a745;
-}

@@ -9,5 +9,5 @@
 // ssid and passPhrase can be used when compiling for a specific environment as a 2. option.
 
 // add you wifi network name and PassPhrase or use WiFi Manager
-const char *ssid = "artu_wifi_maxxing";
-const char *passPhrase = "poggerss";
+const char *ssid = "toner";
+const char *passPhrase = "toner123";
