@@ -1,3 +1,4 @@
+
 #include <string.h>
 #define LINE_PIN_START 10
 #define COLUMN_PIN_START 2
@@ -30,6 +31,7 @@ void loop()
     for (int column = 0; column < NUMBER_COLUMNS; column++){
     	matrix[line][column] = !digitalRead(column+COLUMN_PIN_START);
     }
+
 
 
     pinMode(line_pin, INPUT);

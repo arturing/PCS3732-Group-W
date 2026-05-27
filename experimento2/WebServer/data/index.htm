@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>ESP32 W Calculator</title>
+  <link rel="stylesheet" type="text/css" href="style.css" />
+</head>
+
+<body>
+  <script src="script.js"></script>
+  <div class="container">
+    <div class="value_sec">
+      <div class="radio-group">
+        <input type="checkbox" id="sum" class="check-input">
+        <label for="sum" class="check-label">Is Sum</label>
+
+        <input type="checkbox" id="comp" class="check-input">
+        <label for="comp" class="check-label">Is 2's complement</label>
+      </div>
+      <div class ="input">
+        <label>Value of A:</label>
+        <input id="Value_A" type="text" maxlength="4" placeholder="0000" pattern="[0-1]{4}"/>
+        <label>Value of B:</label>
+        <input id="Value_B" type="text" maxlength="4" placeholder="0000" pattern="[0-1]{4}"/>
+      </div>
+      <div class="result-label">
+        <p>Result is: <span id="result">  </span></p>
+      </div>
+        
+      <div class="submitbtn">
+        <button type="submit" id="submitbtn">
+          Calculate
+        </button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
