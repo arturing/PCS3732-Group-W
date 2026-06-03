@@ -98,7 +98,6 @@ const char CALCULATOR_HTML[] PROGMEM = R"=====(
 </html>
 )=====";
 
-// Lógica de Multiplicação (32 bits para processamento seguro)
 int32_t multiply(int16_t a, int16_t b) {
     int32_t result = 0;
     bool isNegative = (b < 0);
@@ -110,7 +109,6 @@ int32_t multiply(int16_t a, int16_t b) {
     return isNegative ? -result : result;
 }
 
-// Lógica de Fatorial
 int32_t factorial(int16_t n) {
     if (n <= 1) return 1;
     int32_t result = 1;
@@ -120,7 +118,6 @@ int32_t factorial(int16_t n) {
     return result;
 }
 
-// Conversão tratando o bit de sinal de 16 bits (bit 15)
 int16_t converterBinarioParaInteiro(String bin) {
     int32_t valor = strtol(bin.c_str(), NULL, 2);
     if (valor & 0x8000) {
@@ -162,7 +159,6 @@ void handleCalculadora() {
         }
     }
 
-    // Validação estrita baseada nos limites de 16 bits assinados (-32768 a 32767)
     if (resultado < -32768 || resultado > 32767) {
         overflow = true;
     }
@@ -170,13 +166,10 @@ void handleCalculadora() {
     uint16_t bitsExibicao = resultado & 0xFFFF;
     int16_t resDecExibicao = (int16_t)bitsExibicao;
 
-    // ESCALAMENTO DE HARDWARE ATENUADO:
-    // Atualiza apenas os 4 LEDs físicos com os 4 bits menos significativos (LSB)
     for (int i = 0; i < 4; i++) {
         digitalWrite(LED_PINS[i], (bitsExibicao >> i) & 0x01);
     }
 
-    // A interface Web (JSON) continua a receber a string completa de 16 bits
     String binString = "";
     for (int i = 15; i >= 0; i--) {
         binString += String((bitsExibicao >> i) & 1);
