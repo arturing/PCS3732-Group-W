@@ -155,9 +155,9 @@ def run_tests():
     ser.reset_input_buffer()
 
     # Conecta ao Wi-Fi
-    if not connect_wifi(WIFI_SSID, WIFI_PASSWORD):
-        ser.close()
-        sys.exit(1)
+    # if not connect_wifi(WIFI_SSID, WIFI_PASSWORD):
+    #     ser.close()
+    #     sys.exit(1)
 
     time.sleep(2)  # Aguarda estabilização da rede
     base_url = f"http://{ESP32_IP}/calc"
