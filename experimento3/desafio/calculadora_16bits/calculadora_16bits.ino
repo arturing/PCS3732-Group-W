@@ -7,7 +7,7 @@
 
 // ======================== CONFIGURAÇÃO ========================
 // Defina o número de bits da calculadora (2 a 32)
-#define NUM_BITS 4
+#define NUM_BITS 16
 // ==============================================================
 
 // Constantes derivadas de NUM_BITS
@@ -123,24 +123,30 @@ const char CALCULATOR_HTML_TEMPLATE[] PROGMEM = R"=====(
 </html>
 )=====";
 
-// Lógica de Multiplicação (64 bits para processamento seguro)
-int64_t multiply(int32_t a, int32_t b) {
+// Lógica de Multiplicação (com detecção de overflow)
+int64_t multiply(int32_t a, int32_t b, bool &overflow) {
     int64_t result = 0;
     bool isNegative = (b < 0);
     int64_t iter = isNegative ? -(int64_t)b : (int64_t)b;
     
     for (int64_t i = 0; i < iter; i++) {
         result += a;
+        if (result > MAX_SIGNED_VAL || result < MIN_SIGNED_VAL) {
+            overflow = true;
+        }
     }
     return isNegative ? -result : result;
 }
 
-// Lógica de Fatorial
-int64_t factorial(int32_t n) {
+// Lógica de Fatorial (com detecção de overflow)
+int64_t factorial(int32_t n, bool &overflow) {
     if (n <= 1) return 1;
     int64_t result = 1;
     for(int32_t i = 2; i <= n; i++) {
         result *= i;
+        if (result > MAX_SIGNED_VAL) {
+            overflow = true;
+        }
     }
     return result;
 }
@@ -172,20 +178,35 @@ void handleCalculadora() {
     } else if (operacao == "sub") {
         resultado = (int64_t)a - b;
     } else if (operacao == "mul") {
-        resultado = multiply(a, b);
+        unsigned long t0 = micros();
+        resultado = multiply(a, b, overflow);
+        unsigned long dt = micros() - t0;
+        Serial.print("Multiplicação: ");
+        Serial.print(dt);
+        Serial.println(" us");
     } else if (operacao == "div") {
         if (b == 0) {
             overflow = true;
             resultado = 0; 
         } else {
+            unsigned long t0 = micros();
             resultado = (int64_t)a / b; 
+            unsigned long dt = micros() - t0;
+            Serial.print("Divisão: ");
+            Serial.print(dt);
+            Serial.println(" us");
         }
     } else if (operacao == "fact") {
         if (a < 0) {
              overflow = true;
              resultado = 0;
         } else {
-             resultado = factorial(a);
+             unsigned long t0 = micros();
+             resultado = factorial(a, overflow);
+             unsigned long dt = micros() - t0;
+             Serial.print("Fatorial: ");
+             Serial.print(dt);
+             Serial.println(" us");
         }
     }
 
