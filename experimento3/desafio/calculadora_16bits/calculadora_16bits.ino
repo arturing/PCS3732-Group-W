@@ -5,19 +5,40 @@
 #include "secrets.h"
 #include "builtinfiles.h"
 
+// ======================== CONFIGURAÇÃO ========================
+// Defina o número de bits da calculadora (2 a 32)
+#define NUM_BITS 4
+// ==============================================================
+
+// Constantes derivadas de NUM_BITS
+#define MAX_SIGNED_VAL  ((1 << (NUM_BITS - 1)) - 1)
+#define MIN_SIGNED_VAL  (-(1 << (NUM_BITS - 1)))
+#define BIT_MASK        ((1 << NUM_BITS) - 1)
+#define SIGN_BIT        (1 << (NUM_BITS - 1))
+
 // Retornamos para apenas 4 pinos de LEDs seguros para a ESP32 DevKit
-// Eles exibirão os 4 bits menos significativos (LSB) do resultado de 16 bits
+// Eles exibirão os 4 bits menos significativos (LSB) do resultado
 const int LED_PINS[] = {12, 13, 14, 27}; 
+const int NUM_LEDS = 4;
 
 WebServer server(80);
 
-const char CALCULATOR_HTML[] PROGMEM = R"=====(
+// Helper: gerar string de NUM_BITS zeros
+String zeroString() {
+    String s = "";
+    s.reserve(NUM_BITS);
+    for (int i = 0; i < NUM_BITS; i++) s += '0';
+    return s;
+}
+
+// Template HTML com placeholders {{BITS}} e {{ZEROS}} substituídos em tempo de execução
+const char CALCULATOR_HTML_TEMPLATE[] PROGMEM = R"=====(
 <!DOCTYPE html>
 <html lang="pt-br">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Calculadora 16-Bits ESP32 (4 LEDs)</title>
+    <title>Calculadora {{BITS}}-Bits ESP32 (4 LEDs)</title>
     <style>
         body { font-family: 'Segoe UI', Arial, sans-serif; background: #1e293b; color: #f8fafc; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
         .card { background: #0f172a; padding: 30px; border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.5); width: 100%; max-width: 480px; text-align: center; }
@@ -39,14 +60,14 @@ const char CALCULATOR_HTML[] PROGMEM = R"=====(
 </head>
 <body>
     <div class="card">
-        <h2>Painel Aritmético (16 Bits)</h2>
+        <h2>Painel Aritmético ({{BITS}} Bits)</h2>
         <div class="input-group">
-            <label>Operando A (16 bits binários):</label>
-            <input type="text" id="valA" maxlength="16" value="0000000000000000">
+            <label>Operando A ({{BITS}} bits binários):</label>
+            <input type="text" id="valA" maxlength="{{BITS}}" value="{{ZEROS}}">
         </div>
         <div class="input-group">
-            <label>Operando B (16 bits binários):</label>
-            <input type="text" id="valB" maxlength="16" value="0000000000000000">
+            <label>Operando B ({{BITS}} bits binários):</label>
+            <input type="text" id="valB" maxlength="{{BITS}}" value="{{ZEROS}}">
         </div>
         <div class="btn-group">
             <button class="btn-add" onclick="enviarOperacao('add')">SOMAR</button>
@@ -62,17 +83,21 @@ const char CALCULATOR_HTML[] PROGMEM = R"=====(
         </div>
     </div>
     <script>
+        const NUM_BITS = {{BITS}};
+        const ZEROS = "{{ZEROS}}";
+
         function enviarOperacao(op) {
             const a = document.getElementById('valA').value;
             let b = document.getElementById('valB').value;
             
             if (op === 'fact') {
-                b = "0000000000000000"; 
+                b = ZEROS; 
             }
 
-            // Validação mantém a exigência de 16 bits na interface web
-            if(!/^[01]{16}$/.test(a) || !/^[01]{16}$/.test(b)) {
-                alert("Por favor, insira exatamente 16 bits (0 ou 1).");
+            // Validação dinâmica baseada em NUM_BITS
+            const regex = new RegExp("^[01]{" + NUM_BITS + "}$");
+            if(!regex.test(a) || !regex.test(b)) {
+                alert("Por favor, insira exatamente " + NUM_BITS + " bits (0 ou 1).");
                 return;
             }
             fetch(`/calc?a=${a}&b=${b}&op=${op}`)
@@ -87,7 +112,7 @@ const char CALCULATOR_HTML[] PROGMEM = R"=====(
                     document.getElementById('resBin').innerText = "Resultado Binário: " + data.resBin;
                     
                     if(data.overflow) {
-                        document.getElementById('status').innerText = (op === 'div' && b === "0000000000000000") ? "⚠️ ERRO: Divisão por Zero!" : "⚠️ OVERFLOW!";
+                        document.getElementById('status').innerText = (op === 'div' && b === ZEROS) ? "⚠️ ERRO: Divisão por Zero!" : "⚠️ OVERFLOW!";
                     } else {
                         document.getElementById('status').innerText = "✅ Sucesso";
                     }
@@ -98,35 +123,37 @@ const char CALCULATOR_HTML[] PROGMEM = R"=====(
 </html>
 )=====";
 
-// Lógica de Multiplicação (32 bits para processamento seguro)
-int32_t multiply(int16_t a, int16_t b) {
-    int32_t result = 0;
+// Lógica de Multiplicação (64 bits para processamento seguro)
+int64_t multiply(int32_t a, int32_t b) {
+    int64_t result = 0;
     bool isNegative = (b < 0);
-    int32_t iter = isNegative ? -b : b;
+    int64_t iter = isNegative ? -(int64_t)b : (int64_t)b;
     
-    for (int32_t i = 0; i < iter; i++) {
+    for (int64_t i = 0; i < iter; i++) {
         result += a;
     }
     return isNegative ? -result : result;
 }
 
 // Lógica de Fatorial
-int32_t factorial(int16_t n) {
+int64_t factorial(int32_t n) {
     if (n <= 1) return 1;
-    int32_t result = 1;
-    for(int16_t i = 2; i <= n; i++) {
+    int64_t result = 1;
+    for(int32_t i = 2; i <= n; i++) {
         result *= i;
     }
     return result;
 }
 
-// Conversão tratando o bit de sinal de 16 bits (bit 15)
-int16_t converterBinarioParaInteiro(String bin) {
-    int32_t valor = strtol(bin.c_str(), NULL, 2);
-    if (valor & 0x8000) {
-        return (int16_t)(valor | 0xFFFF0000); 
+// Conversão tratando o bit de sinal de NUM_BITS bits
+int32_t converterBinarioParaInteiro(String bin) {
+    uint32_t valor = strtoul(bin.c_str(), NULL, 2);
+    valor &= BIT_MASK;
+    if (valor & SIGN_BIT) {
+        // Extensão de sinal para 32 bits
+        return (int32_t)(valor | ~BIT_MASK);
     }
-    return (int16_t)valor;
+    return (int32_t)valor;
 }
 
 void handleCalculadora() {
@@ -134,16 +161,16 @@ void handleCalculadora() {
     String paramB = server.arg("b");
     String operacao = server.arg("op");
 
-    int16_t a = converterBinarioParaInteiro(paramA);
-    int16_t b = converterBinarioParaInteiro(paramB);
+    int32_t a = converterBinarioParaInteiro(paramA);
+    int32_t b = converterBinarioParaInteiro(paramB);
     
-    int32_t resultado = 0; 
+    int64_t resultado = 0; 
     bool overflow = false;
 
     if (operacao == "add") {
-        resultado = (int32_t)a + b;
+        resultado = (int64_t)a + b;
     } else if (operacao == "sub") {
-        resultado = (int32_t)a - b;
+        resultado = (int64_t)a - b;
     } else if (operacao == "mul") {
         resultado = multiply(a, b);
     } else if (operacao == "div") {
@@ -151,7 +178,7 @@ void handleCalculadora() {
             overflow = true;
             resultado = 0; 
         } else {
-            resultado = (int32_t)a / b; 
+            resultado = (int64_t)a / b; 
         }
     } else if (operacao == "fact") {
         if (a < 0) {
@@ -162,23 +189,31 @@ void handleCalculadora() {
         }
     }
 
-    // Validação estrita baseada nos limites de 16 bits assinados (-32768 a 32767)
-    if (resultado < -32768 || resultado > 32767) {
+    // Validação baseada nos limites de NUM_BITS bits assinados
+    if (resultado < MIN_SIGNED_VAL || resultado > MAX_SIGNED_VAL) {
         overflow = true;
     }
 
-    uint16_t bitsExibicao = resultado & 0xFFFF;
-    int16_t resDecExibicao = (int16_t)bitsExibicao;
+    // Trunca o resultado para NUM_BITS
+    uint32_t bitsExibicao = (uint32_t)(resultado & BIT_MASK);
+
+    // Interpreta o valor truncado como signed para exibição decimal
+    int32_t resDecExibicao;
+    if (bitsExibicao & SIGN_BIT) {
+        resDecExibicao = (int32_t)(bitsExibicao | ~BIT_MASK);
+    } else {
+        resDecExibicao = (int32_t)bitsExibicao;
+    }
 
     // ESCALAMENTO DE HARDWARE ATENUADO:
     // Atualiza apenas os 4 LEDs físicos com os 4 bits menos significativos (LSB)
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < NUM_LEDS; i++) {
         digitalWrite(LED_PINS[i], (bitsExibicao >> i) & 0x01);
     }
 
-    // A interface Web (JSON) continua a receber a string completa de 16 bits
+    // A interface Web (JSON) recebe a string completa de NUM_BITS bits
     String binString = "";
-    for (int i = 15; i >= 0; i--) {
+    for (int i = NUM_BITS - 1; i >= 0; i--) {
         binString += String((bitsExibicao >> i) & 1);
     }
 
@@ -195,7 +230,7 @@ void setup() {
     Serial.begin(115200);
 
     // Inicializa apenas os 4 pinos de saída físicos
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < NUM_LEDS; i++) {
         pinMode(LED_PINS[i], OUTPUT);
         digitalWrite(LED_PINS[i], LOW);
     }
@@ -209,7 +244,11 @@ void setup() {
     Serial.println(WiFi.softAPIP());
     
     server.on("/", HTTP_GET, []() {
-        server.send(200, "text/html", CALCULATOR_HTML);
+        String html = FPSTR(CALCULATOR_HTML_TEMPLATE);
+        String zeros = zeroString();
+        html.replace("{{BITS}}", String(NUM_BITS));
+        html.replace("{{ZEROS}}", zeros);
+        server.send(200, "text/html", html);
     });
 
     server.on("/calc", HTTP_GET, handleCalculadora);
