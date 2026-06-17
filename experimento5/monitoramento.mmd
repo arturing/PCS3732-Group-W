@@ -1,0 +1,24 @@
+graph TD
+    subgraph Entradas [Sensores / Entradas Físicas]
+        LDR["Sensor LDR<br/>Pino ADC 3"]
+        BOTAO["Botão SOS<br/>Pino Digital 0"]
+    end
+
+    subgraph Processamento [Controle Central - ESP32]
+        CORE["Lógica Central e Máquina de Estados<br/>NORMAL, NOTURNO, EMERGÊNCIA"]
+        WIFI["Modo Access Point WiFi<br/>SSID: toner"]
+        SERVER["Servidor HTTP Web<br/>Porta 80"]
+    end
+
+    subgraph Saidas [Atuadores e Interfaces Web]
+        LED["LED RGB NeoPixel<br/>Pino 8"]
+        CLIENTE["Cliente / Navegador<br/>Dashboard Web"]
+    end
+
+    %% Fluxo de dados e controle
+    LDR -->|Leitura Analógica 12 bits| CORE
+    BOTAO -->|Interrupção FALLING| CORE
+    CORE <-->|Estado do Sistema e Valores LDR| SERVER
+    CORE -->|Acionamento de Cores| LED
+    WIFI --> SERVER
+    SERVER -->|Fornece HTML e JSON| CLIENTE

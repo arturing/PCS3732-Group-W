@@ -1,0 +1,24 @@
+graph TD
+    subgraph Entradas [Sensores / Entradas Físicas]
+        LDR2["Sensor LDR<br/>Pino ADC 3"]
+        BOTAO2["Botão Pedestre<br/>Pino Digital 0"]
+    end
+
+    subgraph Processamento [Controle Central - ESP32]
+        CORE2["Lógica do Semáforo<br/>VERDE, AMARELO, VERMELHO, NOTURNO<br/>PEDESTRE_TRANSICAO, PEDESTRE_VERMELHO"]
+        WIFI2["Modo Access Point WiFi<br/>SSID: toner"]
+        SERVER2["Servidor HTTP Web<br/>Porta 80"]
+    end
+
+    subgraph Saidas [Atuadores e Interfaces Web]
+        LED2["LED RGB NeoPixel<br/>Pino 8"]
+        CLIENTE2["Cliente / Navegador<br/>Dashboard Web"]
+    end
+
+    %% Fluxo de dados e controle
+    LDR2 -->|Leitura Analógica 12 bits| CORE2
+    BOTAO2 -->|Interrupção FALLING| CORE2
+    CORE2 <-->|Tempo do Ciclo, Cor e LDR| SERVER2
+    CORE2 -->|Controle do Semáforo| LED2
+    WIFI2 --> SERVER2
+    SERVER2 -->|Fornece HTML e JSON| CLIENTE2
