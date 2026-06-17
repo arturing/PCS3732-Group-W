@@ -1,17 +1,18 @@
 #include <WiFi.h>
 #include <WebServer.h>
+#include <Adafruit_NeoPixel.h> // Adicionado para suporte ao NeoPixel
 
 const char* ssid     = "toner";
 const char* password = "toner123";
 
 WebServer server(80);
 
-const int PIN_LDR = 36;
-const int PIN_BOTAO_PEDESTRE = 26;
+const int PIN_LDR = 3;
+const int PIN_BOTAO_PEDESTRE = 0;
 
-const int PIN_LED_R = 32;
-const int PIN_LED_G = 33;
-const int PIN_LED_B = 25;
+// Configuração do NeoPixel
+#define RGB_LED_PIN 8
+Adafruit_NeoPixel pixels(1, RGB_LED_PIN, NEO_GRB + NEO_KHZ800);
 
 const int LIMIAR_BAIXA_LUZ = 2000;
 
@@ -57,28 +58,25 @@ void IRAM_ATTR isrBotaoPedestre() {
   }
 }
 
+// Controle do NeoPixel
 void ledApagar() {
-  digitalWrite(PIN_LED_R, LOW);
-  digitalWrite(PIN_LED_G, LOW);
-  digitalWrite(PIN_LED_B, LOW);
+  pixels.setPixelColor(0, pixels.Color(0, 0, 0));
+  pixels.show();
 }
 
 void ledVerde() {
-  digitalWrite(PIN_LED_R, LOW);
-  digitalWrite(PIN_LED_G, HIGH);
-  digitalWrite(PIN_LED_B, LOW);
+  pixels.setPixelColor(0, pixels.Color(0, 255, 0));
+  pixels.show();
 }
 
 void ledAmarelo() {
-  digitalWrite(PIN_LED_R, HIGH);
-  digitalWrite(PIN_LED_G, HIGH);
-  digitalWrite(PIN_LED_B, LOW);
+  pixels.setPixelColor(0, pixels.Color(255, 200, 0)); // Ajustado para um tom de amarelo mais realista
+  pixels.show();
 }
 
 void ledVermelho() {
-  digitalWrite(PIN_LED_R, HIGH);
-  digitalWrite(PIN_LED_G, LOW);
-  digitalWrite(PIN_LED_B, LOW);
+  pixels.setPixelColor(0, pixels.Color(255, 0, 0));
+  pixels.show();
 }
 
 void transitarPara(EstadoSemaforo novoEstado) {
@@ -227,11 +225,11 @@ void setup() {
   Serial.println("--- BOOT: SEMAFORO INTELIGENTE ESP32 ---");
   Serial.println("=============================================");
 
-  pinMode(PIN_LED_R, OUTPUT);
-  pinMode(PIN_LED_G, OUTPUT);
-  pinMode(PIN_LED_B, OUTPUT);
+  // Inicializa o NeoPixel
+  pixels.begin();
+  pixels.clear();
   ledApagar();
-  Serial.println("[SETUP] LED RGB configurado.");
+  Serial.println("[SETUP] NeoPixel configurado.");
 
   analogReadResolution(12);
   Serial.print("[SETUP] LDR no pino ADC "); Serial.println(PIN_LDR);
