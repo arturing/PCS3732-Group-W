@@ -1,0 +1,11 @@
+stateDiagram-v2
+    direction LR
+    [*] --> NORMAL
+    
+    NORMAL --> NOTURNO : LDR > LIMIAR
+    NOTURNO --> NORMAL : LDR <= LIMIAR
+    
+    NORMAL --> EMERGENCIA : Botão SOS
+    NOTURNO --> EMERGENCIA : Botão SOS
+    
+    EMERGENCIA --> NORMAL : 3s decorridos

@@ -1,0 +1,16 @@
+stateDiagram-v2
+    direction LR
+    [*] --> VERDE
+    
+    VERDE --> AMARELO : Tempo Verde
+    AMARELO --> VERMELHO : Tempo Amarelo
+    VERMELHO --> VERDE : Tempo Vermelho
+    
+    VERDE --> PEDESTRE_TRANSICAO : Botão Pedestre
+    PEDESTRE_TRANSICAO --> PEDESTRE_VERMELHO : Tempo Amarelo
+    PEDESTRE_VERMELHO --> VERDE : Tempo Travessia
+    
+    VERDE --> NOTURNO : Baixa Luz
+    AMARELO --> NOTURNO : Baixa Luz
+    VERMELHO --> NOTURNO : Baixa Luz
+    NOTURNO --> VERDE : Luz Normal
