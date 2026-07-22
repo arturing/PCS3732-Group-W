@@ -65,8 +65,9 @@ KEYPAD_MAP = [
 # Configuração da Fechadura
 # ---------------------------------------------------------------------------
 
-# Senha padrão: "1234" — armazenada como hash SHA-256
-DEFAULT_PASSWORD_HASH = hashlib.sha256("1234".encode()).hexdigest()
+# Senha padrão armazenada como hash SHA-256
+
+DEFAULT_PASSWORD_HASH = "f8638b979b2f4f793ddb6dbd197e0ee25a7a6ea32b0ae22f5e3c5d119d839e75"
 
 MAX_PASSWORD_LENGTH = 6
 MIN_PASSWORD_LENGTH = 4
