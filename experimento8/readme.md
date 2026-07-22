@@ -79,6 +79,47 @@ sequenceDiagram
     end
 ```
 
+## Fluxograma da Máquina de Estados (SM)
+
+Este diagrama detalha o algoritmo principal baseado em uma máquina de estados finitos, com ênfase na recuperação de erros e bloqueio de tentativas (RNF1).
+
+```mermaid
+flowchart TD
+    %% Estilos opcionais para destacar estados críticos
+    classDef state fill:#f9f9f9,stroke:#333,stroke-width:2px;
+    classDef cooldown fill:#ffebee,stroke:#f44336,stroke-width:3px;
+    classDef alarm fill:#fff3e0,stroke:#ff9800,stroke-width:3px;
+
+    Start([Início]) --> IDLE
+    
+    %% Estados principais
+    IDLE((IDLE)):::state --> |"Tecla Pressionada\n(1-9)"| INPUT((INPUT)):::state
+    INPUT --> |"Tecla '*'\n(Apagar, se vazio)"| IDLE
+    
+    INPUT --> |"Tecla '#'\n(Confirmar)"| PROCESSING((PROCESSING)):::state
+    
+    %% Validação
+    PROCESSING --> |"Hash Válido"| SUCCESS((SUCCESS)):::state
+    PROCESSING --> |"Hash Inválido"| FAILURE((FAILURE)):::state
+    
+    %% Sucesso
+    SUCCESS --> |"Timeout de Exibição\n(Acesso Liberado)"| IDLE
+    
+    %% Falha (RNF1 destacado)
+    FAILURE --> |"Incrementa Falhas++"| CheckFailures{"Falhas >= 3?"}
+    
+    CheckFailures --> |"Não"| IDLE
+    CheckFailures --> |"Sim"| COOLDOWN((COOLDOWN)):::cooldown
+    
+    %% RNF1: Bloqueio de 30s
+    COOLDOWN --> |"Espera 30s\n(Zera Falhas = 0)"| IDLE
+    
+    %% Alarme (RF3) - Pode ocorrer de quase qualquer estado
+    MonitorSensor["Monitoramento Contínuo\n(Sensor Ultrassônico)"] -.-> |"Distância > Limiar\ne\nPorta Trancada"| ALARM((ALARM)):::alarm
+    
+    ALARM --> |"Porta fechada novamente"| IDLE
+```
+
 ## Matriz de Validação: Requisitos e Testes
 
 | Requisito | Teste Executado | Resultado Esperado (Telemetria) |
