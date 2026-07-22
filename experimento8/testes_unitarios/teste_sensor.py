@@ -6,8 +6,8 @@ Verifica a leitura contínua de distâncias (polling).
 import lgpio
 import time
 
-PIN_TRIG = 23
-PIN_ECHO = 24
+PIN_TRIG = 14
+PIN_ECHO = 15
 SPEED_OF_SOUND_CM_PER_S = 34300.0
 TIMEOUT_S = 0.04
 

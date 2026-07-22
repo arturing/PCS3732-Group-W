@@ -6,7 +6,7 @@ Verifica as chamadas bloqueantes e comportamento do pino digital.
 import lgpio
 import time
 
-PIN_BUZZER = 25
+PIN_BUZZER = 12
 
 def main():
     print("--- Teste do Buzzer ---")

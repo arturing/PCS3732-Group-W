@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Degrau 2: Teste Unitário do Teclado Matricial 4x4
-Verifica a varredura e o debouncing (anti-bouncing).
+Degrau 2: Teste Unitário do Teclado Matricial 4x4 (Versão PULL-DOWN)
+Implementa a exata lógica validada na Experiência 6, traduzida para lgpio.
 """
 import lgpio
 import time
+import argparse
 
-PIN_ROWS = [5, 6, 13, 19]
-PIN_COLS = [12, 16, 20, 21]
+PIN_ROWS = [16, 20, 21, 26]
+PIN_COLS = [19, 13, 6, 5]
 
 KEYPAD_MAP = [
     ['1', '2', '3', 'A'],
@@ -16,52 +17,87 @@ KEYPAD_MAP = [
     ['*', '0', '#', 'D'],
 ]
 
-KEY_DEBOUNCE_TIME = 0.05
+SETTLE_S = 0.00005
+DEBOUNCE_S = 0.04
+
+class KeypadTest:
+    def __init__(self, h):
+        self.h = h
+        self._held = None
+        self._t_release = 0.0
+        
+        for pin in PIN_ROWS:
+            lgpio.gpio_claim_output(self.h, pin, level=0)
+        for pin in PIN_COLS:
+            lgpio.gpio_claim_input(self.h, pin, lgpio.SET_PULL_DOWN)
+
+    def scan_raw(self):
+        for ri, r in enumerate(PIN_ROWS):
+            lgpio.gpio_write(self.h, r, 1)
+            time.sleep(SETTLE_S)
+            for ci, c in enumerate(PIN_COLS):
+                if lgpio.gpio_read(self.h, c) == 1:
+                    lgpio.gpio_write(self.h, r, 0)
+                    return KEYPAD_MAP[ri][ci]
+            lgpio.gpio_write(self.h, r, 0)
+        return None
+
+    def get_event(self):
+        k = self.scan_raw()
+        agora = time.time()
+        if k is not None:
+            if self._held is None and (agora - self._t_release) >= DEBOUNCE_S:
+                self._held = k
+                return k
+            return None
+        if self._held is not None:
+            self._held = None
+            self._t_release = agora
+        return None
+
+    def diagnostico_repouso(self):
+        print("== Diagnostico (NAO aperte nada agora) ==")
+        suspeita = False
+        for c in PIN_COLS:
+            v = lgpio.gpio_read(self.h, c)
+            aviso = "  <-- DEVERIA SER 0! (pull-down falhou)" if v == 1 else ""
+            print(f"  coluna GPIO{c:>2} em repouso = {v}{aviso}")
+            suspeita = suspeita or (v == 1)
+        if suspeita:
+            print("\n>> Alguma coluna leu 1 sem tecla: pull-down inativo nela.")
+            print(">> Fixe no /boot/firmware/config.txt se preciso!\n")
+        else:
+            print("\n>> Repouso OK (tudo em 0).\n")
+        return not suspeita
 
 def main():
-    print("--- Teste do Teclado 4x4 ---")
+    p = argparse.ArgumentParser(description="Teste isolado do teclado 4x4.")
+    p.add_argument("--diag", action="store_true", help="So diagnostico.")
+    args = p.parse_args()
+
     h = lgpio.gpiochip_open(0)
+    kp = KeypadTest(h)
     
-    for pin in PIN_ROWS:
-        lgpio.gpio_claim_output(h, pin, level=1)
-    for pin in PIN_COLS:
-        lgpio.gpio_claim_input(h, pin, lgpio.SET_PULL_UP)
-
-    last_key = None
-    last_key_time = 0.0
-
+    print(f"==== Teste de Teclado Matricial (Exp 8) ====")
+    print(f"     linhas (saidas)  BCM: {PIN_ROWS}")
+    print(f"     colunas (entrada) BCM: {PIN_COLS}\n")
     try:
+        kp.diagnostico_repouso()
+        if args.diag:
+            return
+            
+        print(">> Pressione teclas (Ctrl+C para sair):\n")
         while True:
-            now = time.time()
-            current_key = None
-
-            for row_idx, row_pin in enumerate(PIN_ROWS):
-                lgpio.gpio_write(h, row_pin, 0)
-                time.sleep(0.001)
-
-                for col_idx, col_pin in enumerate(PIN_COLS):
-                    if lgpio.gpio_read(h, col_pin) == 0:
-                        current_key = KEYPAD_MAP[row_idx][col_idx]
-                        break
-
-                lgpio.gpio_write(h, row_pin, 1)
-                if current_key:
-                    break
-
-            if current_key:
-                if current_key != last_key or (now - last_key_time) >= KEY_DEBOUNCE_TIME:
-                    print(f"Tecla Pressionada: {current_key}")
-                    last_key = current_key
-                    last_key_time = now
-            elif (now - last_key_time) >= KEY_DEBOUNCE_TIME:
-                last_key = None
-                
-            time.sleep(0.01)
-
+            k = kp.get_event()
+            if k is not None:
+                print(f"   tecla = '{k}'")
+            time.sleep(0.005)
     except KeyboardInterrupt:
-        print("\nEncerrando teste.")
+        print("\nInterrompido.")
     finally:
+        for r in PIN_ROWS:
+            lgpio.gpio_write(h, r, 0)
         lgpio.gpiochip_close(h)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
