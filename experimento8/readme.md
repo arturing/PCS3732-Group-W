@@ -93,3 +93,12 @@ sequenceDiagram
 1. **Spoofing de Sensor:** Um atacante pode tentar colocar um objeto na frente do sensor ultrassônico para fingir que a porta está fechada enquanto a arromba. Embora seja uma ameaça física válida, a montagem embutida do sensor no batente da porta mitiga essa abordagem.
 2. **Timing Attacks:** O uso de Raspberry Pi com Linux (agendador multitarefa) cria pequenas variações de tempo no processamento. O sistema armazena a senha usando Hash SHA-256 via a biblioteca `hashlib`, mitigando armazenamento em texto plano.
 3. **Ghosting/Bouncing:** Tratado inteiramente em software com um delay programático não-bloqueante (`KEY_DEBOUNCE_TIME = 0.05s`), assegurando que apenas uma tecla é registrada por pressionamento.
+
+## Gerenciamento de Senha
+
+Para alterar a senha da fechadura (armazenada de forma segura utilizando hash SHA-256), é fornecido um script bash auxiliar. Ele calcula o hash da nova senha e atualiza automaticamente o arquivo `fechadura.py`.
+
+**Uso:**
+```bash
+./change_password.sh <nova_senha>
+```
