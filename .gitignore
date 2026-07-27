@@ -67,3 +67,30 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Python (projeto_final)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ambientes virtuais Python
+.venv/
+venv/
+pyvenv.cfg
+
+# Empacotamento Python
+*.egg-info/
+dist/
+
+# Cache de ferramentas de teste / análise estática
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Segredos: CHESS_LICHESS_TOKEN e demais variáveis de ambiente
+# consumidas por projeto_final/app/config.py
+.env
+.env.*
+!.env.example

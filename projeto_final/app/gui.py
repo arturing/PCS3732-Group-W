@@ -55,6 +55,61 @@ PIECE_UNICODE = {
     (chess.PAWN, chess.BLACK): "♟",
 }
 
+# Fallback usado quando nenhuma fonte do sistema possui os glifos de xadrez.
+# A cor da peça continua sendo distinguida pela cor do texto.
+PIECE_ASCII = {
+    (piece_type, color): letter
+    for (piece_type, letter) in (
+        (chess.KING, "K"), (chess.QUEEN, "Q"), (chess.ROOK, "R"),
+        (chess.BISHOP, "B"), (chess.KNIGHT, "N"), (chess.PAWN, "P"),
+    )
+    for color in (chess.WHITE, chess.BLACK)
+}
+
+# Fontes candidatas para as peças, em ordem de preferência. Nem toda fonte
+# cobre o bloco U+2654–U+265F: "arial" no Linux é resolvido para Liberation
+# Sans, que não possui esses glifos e renderiza tudo como '?'.
+PIECE_FONT_CANDIDATES = (
+    "dejavusans",        # Linux (praticamente universal)
+    "freeserif",         # Linux
+    "notosanssymbols2",  # Linux/Android
+    "segoeuisymbol",     # Windows
+    "arialunicodems",    # Windows/macOS
+    "applesymbols",      # macOS
+    "dejavusansmono",
+    "unifont",
+)
+
+
+def _find_piece_font() -> Optional[str]:
+    """Procura uma fonte do sistema que contenha todos os glifos de xadrez.
+
+    Returns:
+        Caminho da fonte encontrada, ou None se nenhuma candidata cobrir
+        os 12 símbolos de peça.
+    """
+    required = "".join(PIECE_UNICODE.values())
+
+    for name in PIECE_FONT_CANDIDATES:
+        path = pygame.font.match_font(name)
+        if path is None:
+            continue
+        try:
+            # metrics() retorna None para cada caractere ausente na fonte.
+            metrics = pygame.font.Font(path, 24).metrics(required)
+        except (pygame.error, OSError):
+            continue
+        if metrics and all(m is not None for m in metrics):
+            logger.info("Fonte das peças: %s (%s)", name, path)
+            return path
+
+    logger.warning(
+        "Nenhuma fonte com glifos de xadrez encontrada (tentadas: %s). "
+        "Usando letras K/Q/R/B/N/P. Instale a DejaVu Sans para ver as peças.",
+        ", ".join(PIECE_FONT_CANDIDATES),
+    )
+    return None
+
 
 class ChessGUI:
     """Interface gráfica do tabuleiro de xadrez usando pygame.
@@ -98,6 +153,7 @@ class ChessGUI:
         # Pygame
         self._screen: Optional[pygame.Surface] = None
         self._clock: Optional[pygame.time.Clock] = None
+        self._piece_font_path: Optional[str] = None
         self._font_pieces: Optional[pygame.font.Font] = None
         self._font_coords: Optional[pygame.font.Font] = None
         self._font_status: Optional[pygame.font.Font] = None
@@ -114,8 +170,8 @@ class ChessGUI:
         self._clock = pygame.time.Clock()
 
         # Fontes
-        piece_size = int(self._square_size * 0.75)
-        self._font_pieces = pygame.font.SysFont("segoeuisymbol,arial", piece_size)
+        self._piece_font_path = _find_piece_font()
+        self._font_pieces = self._make_piece_font(int(self._square_size * 0.75))
         self._font_coords = pygame.font.SysFont("arial", 14)
         self._font_status = pygame.font.SysFont("arial", 16)
         self._font_message = pygame.font.SysFont("arial", 18, bold=True)
@@ -129,6 +185,18 @@ class ChessGUI:
             self._board_size, self._board_size,
             self._window_width, self._window_height,
         )
+
+    def _make_piece_font(self, size: int) -> "pygame.font.Font":
+        """Cria uma fonte para desenhar peças no tamanho pedido."""
+        if self._piece_font_path is not None:
+            return pygame.font.Font(self._piece_font_path, size)
+        # Fallback ASCII: letras precisam ser menores para caber na casa.
+        return pygame.font.SysFont("arial", int(size * 0.8), bold=True)
+
+    def _piece_char(self, piece: chess.Piece) -> str:
+        """Retorna o símbolo a desenhar para uma peça."""
+        table = PIECE_UNICODE if self._piece_font_path is not None else PIECE_ASCII
+        return table[(piece.piece_type, piece.color)]
 
     def update(
         self,
@@ -232,9 +300,8 @@ class ChessGUI:
         # Desenha a peça
         piece = board.piece_at(square)
         if piece:
-            char = PIECE_UNICODE.get((piece.piece_type, piece.color), "?")
+            char = self._piece_char(piece)
             # Sombra para legibilidade
-            shadow_color = (0, 0, 0, 100) if piece.color == chess.WHITE else (50, 50, 50, 80)
             text_color = (255, 255, 255) if piece.color == chess.WHITE else (30, 30, 30)
 
             # Renderiza sombra
@@ -298,13 +365,21 @@ class ChessGUI:
             (0, bar_y), (self._window_width, bar_y), 1,
         )
 
-        # Turno atual
+        # Turno atual — indicador desenhado, para não depender de glifos
+        # Unicode (U+2B1B/U+2B1C faltam na maioria das fontes de texto).
         turn_text = "Brancas" if board.turn == chess.WHITE else "Pretas"
-        turn_indicator = "⬜" if board.turn == chess.WHITE else "⬛"
-        turn_surface = self._font_status.render(
-            f"{turn_indicator} Turno: {turn_text}", True, TEXT_COLOR
+        indicator = pygame.Rect(10, bar_y + 11, 13, 13)
+        pygame.draw.rect(
+            self._screen,
+            (255, 255, 255) if board.turn == chess.WHITE else (30, 30, 30),
+            indicator,
         )
-        self._screen.blit(turn_surface, (10, bar_y + 8))
+        pygame.draw.rect(self._screen, COORD_COLOR, indicator, 1)
+
+        turn_surface = self._font_status.render(
+            f"Turno: {turn_text}", True, TEXT_COLOR
+        )
+        self._screen.blit(turn_surface, (31, bar_y + 8))
 
         # Número do movimento
         move_num = board.fullmove_number
@@ -376,16 +451,19 @@ class ChessGUI:
 
         # Opções de promoção
         options = [
-            (chess.QUEEN, "♛ Dama (Q)"),
-            (chess.ROOK, "♜ Torre (R)"),
-            (chess.BISHOP, "♝ Bispo (B)"),
-            (chess.KNIGHT, "♞ Cavalo (N)"),
+            (chess.QUEEN, "Dama (Q)"),
+            (chess.ROOK, "Torre (R)"),
+            (chess.BISHOP, "Bispo (B)"),
+            (chess.KNIGHT, "Cavalo (N)"),
         ]
 
-        font = pygame.font.SysFont("arial", 28, bold=True)
+        # Usa a mesma fonte das peças: precisa cobrir os símbolos de xadrez.
+        font = self._make_piece_font(28)
         y_start = self._window_height // 2 - 80
 
-        for i, (_, label) in enumerate(options):
+        for i, (piece_type, name) in enumerate(options):
+            symbol = self._piece_char(chess.Piece(piece_type, chess.BLACK))
+            label = f"{symbol} {name}"
             text = font.render(label, True, TEXT_COLOR)
             rect = text.get_rect(
                 center=(self._window_width // 2, y_start + i * 45)
