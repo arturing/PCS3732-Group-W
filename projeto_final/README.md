@@ -176,6 +176,36 @@ Nada é destacado fora do turno do jogador, nem quando a peça foi levantada
 para desfazer um movimento ilegal — aí o que vale é a instrução da barra de
 status.
 
+## Roque em duas etapas
+
+No tabuleiro físico ninguém move rei e torre ao mesmo tempo, então o roque é
+feito **em duas etapas, o rei primeiro**:
+
+1. **Mova o rei duas casas** (e1→g1 ou e1→c1). Sozinho, esse lance não existe
+   nas regras — aqui ele é lido como o começo de um roque. O tabuleiro
+   virtual **não** é atualizado ainda; a barra de status passa a pedir a
+   torre e a GUI destaca a casa dela e o destino.
+2. **Mova a torre** para o outro lado do rei (h1→f1 ou a1→d1). Só agora o
+   roque é aplicado ao tabuleiro virtual, como um lance só.
+
+| Estado | Mensagem exibida |
+|--------|------------------|
+| Rei no lugar, torre ainda na casa dela | `Roque — agora mova a torre de h1 para f1` |
+| Torre na mão | `Roque — coloque a torre em f1` |
+| Rei levantado de novo | `Roque — coloque o rei em g1` |
+
+Enquanto o roque está pela metade:
+
+- **Devolver o rei à casa dele cancela o roque.** Nada é aplicado e o jogo
+  volta ao estado anterior.
+- **Nenhum outro lance é aceito.** Mexer noutra peça faz a barra de status
+  pedir a correção; o roque só se completa com o resto do tabuleiro na
+  posição, como qualquer outro lance.
+
+O evento único com as quatro mudanças (`e1:0,g1:1,h1:0,f1:1`) continua
+valendo: se a torre já estiver no lugar quando o rei for reconhecido, o roque
+é aplicado na hora, sem espera.
+
 ## Instruções na barra de status
 
 A barra inferior da GUI diz o que fazer **no tabuleiro físico** para que ele
@@ -238,9 +268,13 @@ casa:estado,casa:estado\n
 | Jogada | Evento IPC |
 |--------|-----------|
 | e2→e4 (peão) | `e2:0,e4:1` |
-| O-O (roque curto brancas) | `e1:0,g1:1,h1:0,f1:1` |
-| O-O-O (roque longo) | `e1:0,c1:1,a1:0,d1:1` |
+| O-O (roque curto brancas) | `e1:0,g1:1` e depois `h1:0,f1:1` |
+| O-O-O (roque longo) | `e1:0,c1:1` e depois `a1:0,d1:1` |
 | Captura (Bxf7) | `c4:0,f7:1` |
+
+O roque também é aceito num evento só (`e1:0,g1:1,h1:0,f1:1`), mas na mão do
+jogador ele chega em duas etapas — veja [Roque em duas
+etapas](#roque-em-duas-etapas).
 
 ## Configuração via variáveis de ambiente
 

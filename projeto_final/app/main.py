@@ -45,6 +45,28 @@ REASON_ILLEGAL = "ilegal"      # o lance foi recusado pelas regras do xadrez
 REASON_BLOCKED = "bloqueado"   # o lance foi feito com o tabuleiro fora da posição
 
 
+class PendingCastling(NamedTuple):
+    """Roque começado no tabuleiro físico: o rei já andou, falta a torre.
+
+    No tabuleiro físico o roque são dois movimentos, feitos nesta ordem: o
+    rei anda duas casas e só depois a torre pula para o outro lado dele. O
+    rei andando duas casas sozinho não é lance legal nenhum, então é lido
+    como o começo de um roque — o lance só é aplicado ao tabuleiro virtual
+    quando a torre chega ao lugar dela.
+    """
+
+    move: chess.Move   # o roque no tabuleiro virtual (ex: e1g1)
+    king_from: str
+    king_to: str
+    rook_from: str
+    rook_to: str
+
+    @property
+    def squares(self) -> set[str]:
+        """As quatro casas que o roque explica enquanto está em andamento."""
+        return {self.king_from, self.king_to, self.rook_from, self.rook_to}
+
+
 class MisplacedPiece(NamedTuple):
     """Peça física fora do lugar, à espera de ser devolvida.
 
@@ -124,6 +146,10 @@ class ChessApplication:
         # Casa de onde o jogador levantou a peça para jogar. Enquanto ela
         # estiver na mão, a GUI destaca os destinos legais dessa peça.
         self._lifted_square: Optional[str] = None
+
+        # Roque em andamento: o rei já andou as duas casas e o jogo espera a
+        # torre. Enquanto isso, nenhum outro lance é aceito.
+        self._pending_castling: Optional[PendingCastling] = None
 
     def start(self) -> None:
         """Inicializa todos os módulos."""
@@ -252,7 +278,11 @@ class ChessApplication:
             else:
                 move_candidate = True
 
-        if move_candidate:
+        if self._pending_castling:
+            # Também nas retiradas: tirar do tabuleiro a peça que estava
+            # atrapalhando é o que libera o roque a ser concluído.
+            self._continue_castling()
+        elif move_candidate:
             self._try_apply_move()
 
     def _place_misplaced_piece(self, square: str) -> None:
@@ -295,19 +325,116 @@ class ChessApplication:
         diff.update({sq: 1 for sq in extra})
 
         move = self.interpreter.interpret(diff, self.game_state.board)
-        if move and self.game_state.apply_move(move):
-            logger.info("Jogada do jogador aplicada: %s", move.uci())
-            self._sync_mirror_to_board()
-            self._set_board_message("", "info")
 
-            if self.lichess:
-                if not self.lichess.send_move(move.uci()):
-                    logger.error("Lichess rejeitou a jogada: %s", move.uci())
+        # O rei andando duas casas abre o roque em vez de fechá-lo: no
+        # tabuleiro físico a torre ainda não se mexeu.
+        if move and self.game_state.board.is_castling(move):
+            self._begin_castling(move)
+            return
+
+        if move and self._commit_move(move):
             return
 
         # Lance recusado pelas regras: entra no histórico para ser desfeito.
         if pair:
             self._remember_misplaced(*pair, REASON_ILLEGAL)
+
+    def _commit_move(self, move: chess.Move) -> bool:
+        """Aplica o lance ao tabuleiro virtual e propaga o efeito.
+
+        Returns:
+            True se o lance foi aplicado.
+        """
+        if not self.game_state.apply_move(move):
+            return False
+
+        logger.info("Jogada do jogador aplicada: %s", move.uci())
+        self._sync_mirror_to_board()
+        self._set_board_message("", "info")
+
+        if self.lichess:
+            if not self.lichess.send_move(move.uci()):
+                logger.error("Lichess rejeitou a jogada: %s", move.uci())
+        return True
+
+    def _castling_squares(self, move: chess.Move) -> PendingCastling:
+        """Descreve um roque pelas casas do rei e da torre."""
+        rank = chess.square_rank(move.from_square)
+        if self.game_state.board.is_kingside_castling(move):
+            rook_from, rook_to = chess.square(7, rank), chess.square(5, rank)
+        else:
+            rook_from, rook_to = chess.square(0, rank), chess.square(3, rank)
+
+        return PendingCastling(
+            move,
+            chess.square_name(move.from_square),
+            chess.square_name(move.to_square),
+            chess.square_name(rook_from),
+            chess.square_name(rook_to),
+        )
+
+    def _begin_castling(self, move: chess.Move) -> None:
+        """Registra o roque aberto pelo rei e tenta fechá-lo na hora.
+
+        A tentativa imediata cobre o caso em que a torre já está no lugar: o
+        hardware pode entregar as quatro mudanças num evento só, e aí o roque
+        não tem por que esperar um próximo evento para ser aplicado.
+        """
+        pending = self._castling_squares(move)
+        self._pending_castling = pending
+        logger.info(
+            "Roque iniciado: rei %s→%s; falta a torre %s→%s.",
+            pending.king_from, pending.king_to,
+            pending.rook_from, pending.rook_to,
+        )
+        self._continue_castling()
+
+    def _continue_castling(self) -> None:
+        """Fecha, cancela ou bloqueia o roque em andamento.
+
+        Chamado a cada mudança de sensor enquanto o roque espera a torre. São
+        três desfechos: a torre chegou (o lance é aplicado), o rei voltou para
+        a casa dele (o jogador desistiu) ou outra peça se mexeu (precisa
+        voltar antes de o roque continuar).
+        """
+        pending = self._pending_castling
+        mirror = self.physical_board_state
+
+        # Fora as quatro casas do roque, o tabuleiro tem de estar na posição:
+        # como qualquer outro lance, o roque não é aplicado por cima de uma
+        # peça fora do lugar.
+        missing, extra = self._board_diff()
+        board_is_clean = not missing and not extra
+
+        # A torre chegou: o roque se completa.
+        if (board_is_clean
+                and not mirror.get(pending.rook_from, False)
+                and mirror.get(pending.rook_to, False)):
+            self._pending_castling = None
+            if self._commit_move(pending.move):
+                logger.info("Roque concluído: %s", pending.move.uci())
+            return
+
+        # O rei voltou: o jogador desistiu do roque.
+        if (mirror.get(pending.king_from, False)
+                and not mirror.get(pending.king_to, False)):
+            logger.info(
+                "Roque cancelado: o rei voltou para %s.", pending.king_from
+            )
+            self._pending_castling = None
+            return
+
+        # Mexeu em outra peça: ela precisa voltar para o roque seguir. Nada é
+        # registrado no histórico de peças deslocadas — com quatro casas fora
+        # da diferença (as do roque), um par origem→destino não é confiável:
+        # a peça pode ter sido posta justamente numa casa que não aparece.
+        # Quem descreve a bagunça é a instrução da diferença, que não inventa
+        # emparelhamento, e o bloqueio já vem da exigência de tabuleiro limpo.
+        if missing or extra:
+            logger.info(
+                "Roque em espera: %s precisa(m) de peça, %s precisa(m) ficar "
+                "vazia(s).", missing or "nenhuma", extra or "nenhuma",
+            )
 
     def _remember_misplaced(self, home: str, current: str, reason: str) -> None:
         """Registra uma peça fora do lugar, a ser devolvida de `current` a `home`."""
@@ -331,10 +458,17 @@ class ChessApplication:
                 self.physical_board_state[square] = occupied
 
     def _pending_squares(self) -> set[str]:
-        """Casas cujo estado é explicado por uma peça deslocada pendente."""
+        """Casas cujo estado já é explicado por algo pendente.
+
+        Peças deslocadas à espera de devolução e, durante um roque, as quatro
+        casas do rei e da torre: elas estão fora da posição virtual por
+        construção, até a torre chegar e o lance ser aplicado.
+        """
         pending = set(self._misplaced)
         pending.update(entry.home for entry in self._misplaced.values())
         pending.update(entry.home for entry in self._in_hand)
+        if self._pending_castling:
+            pending.update(self._pending_castling.squares)
         return pending
 
     def _prune_misplaced(self) -> None:
@@ -400,8 +534,8 @@ class ChessApplication:
         """Deriva a instrução física do estado atual dos sensores.
 
         Uma instrução por vez, na ordem do que o jogador precisa fazer agora:
-        a peça que está na mão, as peças deslocadas (que bloqueiam o jogo) e
-        depois a diferença nos sensores.
+        a peça que está na mão, as peças deslocadas (que bloqueiam o jogo), o
+        roque a terminar e depois a diferença nos sensores.
         """
         # Havia algo pendente? Um lance aplicado limpa a mensagem antes de
         # chegar aqui, então isto distingue "acabei de arrumar o tabuleiro"
@@ -410,7 +544,7 @@ class ChessApplication:
         self._prune_misplaced()
         missing, extra = self._board_diff()
 
-        # Só o caso 3 abaixo é uma peça a caminho do destino; nos outros não
+        # Só o caso 4 abaixo é uma peça a caminho do destino; nos outros não
         # há lance em andamento para destacar.
         self._lifted_square = None
 
@@ -435,7 +569,15 @@ class ChessApplication:
             )
             return
 
-        # 3. Peça levantada para jogar: movimento em andamento, não é erro.
+        # 3. Roque em andamento: o rei já andou, falta a torre. Não é erro —
+        #    é a segunda metade de um lance só. Com o resto do tabuleiro fora
+        #    da posição, a correção vem primeiro (casos 5 e 6): é ela que
+        #    destrava o roque.
+        if self._pending_castling and not missing and not extra:
+            self._set_board_message(self._castling_instruction(), "info")
+            return
+
+        # 4. Peça levantada para jogar: movimento em andamento, não é erro.
         #    A GUI destaca os destinos legais enquanto a peça está na mão.
         if not extra and len(missing) == 1:
             self._lifted_square = missing[0]
@@ -444,7 +586,7 @@ class ChessApplication:
             )
             return
 
-        # 4. Outras diferenças nos sensores
+        # 5. Outras diferenças nos sensores
         if missing or extra:
             if missing and extra:
                 # Bagunça de verdade: pede a correção casa por casa
@@ -461,13 +603,27 @@ class ChessApplication:
                 )
             return
 
-        # 5. Tudo no lugar. A confirmação se auto-sustenta (had_pending
+        # 6. Tudo no lugar. A confirmação se auto-sustenta (had_pending
         #    continua verdadeiro nos ciclos seguintes), ficando em cartaz até
         #    o próximo lance ou problema.
         if had_pending:
             self._set_board_message("Tabuleiro na posição certa — sua vez", "success")
         else:
             self._set_board_message("", "info")
+
+    def _castling_instruction(self) -> str:
+        """O que ainda falta para completar o roque em andamento."""
+        pending = self._pending_castling
+        mirror = self.physical_board_state
+
+        if not mirror.get(pending.king_to, False):
+            return f"Roque — coloque o rei em {pending.king_to}"
+        if mirror.get(pending.rook_from, False):
+            return (
+                f"Roque — agora mova a torre de {pending.rook_from} "
+                f"para {pending.rook_to}"
+            )
+        return f"Roque — coloque a torre em {pending.rook_to}"
 
     def _undo_reason(self, entry: MisplacedPiece) -> str:
         """Prefixo que explica por que a peça precisa voltar para a casa dela."""
@@ -536,7 +692,21 @@ class ChessApplication:
         Fora do turno do jogador não há lance a sugerir: a peça pode ter sido
         levantada por engano enquanto o oponente pensa.
         """
-        if self._lifted_square is None or not self.game_state.is_player_turn:
+        if not self.game_state.is_player_turn:
+            return None, {}
+
+        # No meio do roque a torre tem um destino só. Ele é mostrado desde o
+        # começo, com a torre ainda na casa dela: os lances legais que o
+        # tabuleiro virtual conhece para essa torre (onde o roque ainda não
+        # aconteceu) não são os que valem agora.
+        pending = self._pending_castling
+        if pending:
+            return (
+                chess.parse_square(pending.rook_from),
+                {chess.parse_square(pending.rook_to): False},
+            )
+
+        if self._lifted_square is None:
             return None, {}
 
         square = chess.parse_square(self._lifted_square)

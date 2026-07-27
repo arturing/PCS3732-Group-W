@@ -5,13 +5,21 @@ Recebe as mudanças brutas dos reed switches (quais casas mudaram de estado)
 e determina qual jogada de xadrez corresponde, considerando:
   - Movimentos normais (1 origem → 1 destino)
   - Capturas (peça do oponente é virtual, não está no tabuleiro físico)
-  - Roque (2 origens → 2 destinos: rei + torre)
+  - Roque (2 origens → 2 destinos: rei + torre), quando as quatro mudanças
+    chegam num evento só
   - En passant (mesmo padrão de movimento normal, peça capturada é virtual)
   - Promoção (movimento normal + flag de promoção)
 
 NOTA: Como as peças do oponente NÃO estão no tabuleiro físico
 (são renderizadas apenas na GUI), capturas se comportam como
 movimentos normais do ponto de vista dos sensores.
+
+NOTA: na prática o jogador roca em duas etapas — o rei anda duas casas e só
+depois a torre. Cada etapa chega aqui como uma mudança de 1 origem → 1
+destino; quem costura as duas num lance só é o `ChessApplication`, que segura
+o roque aberto pelo rei até a torre chegar. Este módulo devolve o roque a
+partir do lance do rei (é assim que o python-chess o representa) e o caso de
+2 origens → 2 destinos cobre o evento único que traz tudo de uma vez.
 """
 
 import logging
