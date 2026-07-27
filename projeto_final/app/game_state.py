@@ -100,6 +100,27 @@ class GameState:
         """Verifica se um movimento é legal na posição atual."""
         return move in self.board.legal_moves
 
+    def get_legal_targets(self, square: chess.Square) -> dict[int, bool]:
+        """Lista os destinos legais da peça que está em `square`.
+
+        Usado para destacar na GUI para onde a peça levantada do tabuleiro
+        pode ir.
+
+        Args:
+            square: Casa de origem (índice do python-chess).
+
+        Returns:
+            Dicionário {casa_destino: é_captura}. Vazio se não houver lance
+            legal a partir dessa casa (peça do oponente, casa vazia ou peça
+            cravada). Uma promoção aparece uma única vez: os quatro lances
+            possíveis compartilham o mesmo destino.
+        """
+        targets: dict[int, bool] = {}
+        for move in self.board.legal_moves:
+            if move.from_square == square:
+                targets[move.to_square] = self.board.is_capture(move)
+        return targets
+
     def apply_move(self, move: chess.Move) -> bool:
         """Aplica um movimento ao tabuleiro.
 

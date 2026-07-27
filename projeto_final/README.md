@@ -158,6 +158,24 @@ sensores ativos. O tamanho do tabuleiro é ajustável por
 | `help` | Lista os comandos |
 | `quit` | Encerrar |
 
+## Destaques no tabuleiro
+
+Enquanto o jogador está com uma peça na mão — o sensor da casa desligou e
+nenhum outro ligou — a GUI mostra para onde essa peça pode ir:
+
+| Marca | Significado |
+|-------|-------------|
+| Casa verde | Casa de onde a peça foi levantada |
+| Ponto no centro | Destino legal, casa livre |
+| Anel vermelho | Destino legal que captura uma peça (inclui *en passant*) |
+| Casa amarela | Origem e destino do último lance |
+
+Os destinos saem dos lances legais do tabuleiro virtual, então já consideram
+xeque e peças cravadas: uma peça sem lance legal não recebe marca nenhuma.
+Nada é destacado fora do turno do jogador, nem quando a peça foi levantada
+para desfazer um movimento ilegal — aí o que vale é a instrução da barra de
+status.
+
 ## Instruções na barra de status
 
 A barra inferior da GUI diz o que fazer **no tabuleiro físico** para que ele

@@ -9,6 +9,7 @@ ou pelo stream Lichess.
 Características:
   - Renderização incremental (atualiza apenas casas alteradas)
   - Destaque do último movimento
+  - Destaque dos destinos legais da peça levantada do tabuleiro
   - Barra de status com informações do jogo
   - Coordenadas nas bordas do tabuleiro
   - Peças renderizadas com caracteres Unicode de xadrez
@@ -31,7 +32,7 @@ from app.config import (
     BOARD_SIZE, STATUS_BAR_HEIGHT, GUI_FPS,
     LIGHT_SQUARE_COLOR, DARK_SQUARE_COLOR, HIGHLIGHT_COLOR,
     INVALID_MOVE_COLOR, BG_COLOR, STATUS_BG_COLOR, TEXT_COLOR,
-    COORD_COLOR,
+    COORD_COLOR, SELECTED_SQUARE_COLOR, MOVE_HINT_COLOR, CAPTURE_HINT_COLOR,
 )
 
 logger = logging.getLogger(__name__)
@@ -146,6 +147,8 @@ class ChessGUI:
         # Estado para renderização incremental
         self._last_board_fen: Optional[str] = None
         self._last_highlighted: Optional[set] = None
+        self._last_selected: Optional[int] = None
+        self._last_targets: Optional[dict[int, bool]] = None
         self._last_message: Optional[str] = None
         self._message_color = TEXT_COLOR
         self._needs_full_redraw = True
@@ -204,6 +207,8 @@ class ChessGUI:
         last_move: Optional[chess.Move] = None,
         message: str = "",
         message_type: str = "info",
+        selected_square: Optional[int] = None,
+        legal_targets: Optional[dict[int, bool]] = None,
     ) -> None:
         """Atualiza a renderização do tabuleiro.
 
@@ -212,6 +217,10 @@ class ChessGUI:
             last_move: Último movimento (para destacar casas).
             message: Mensagem para exibir na barra de status.
             message_type: Tipo da mensagem ('info', 'error', 'success').
+            selected_square: Casa da peça que o jogador levantou, destacada
+                enquanto ela estiver na mão.
+            legal_targets: Destinos legais dessa peça, no formato
+                {casa: é_captura}. Vazios recebem um ponto; capturas, um anel.
         """
         if self._screen is None:
             return
@@ -222,23 +231,34 @@ class ChessGUI:
             highlighted.add(last_move.from_square)
             highlighted.add(last_move.to_square)
 
+        targets = legal_targets or {}
+
         # Verifica se precisa de redesenho completo ou incremental
         fen_changed = current_fen != self._last_board_fen
         highlight_changed = highlighted != self._last_highlighted
+        selection_changed = (
+            selected_square != self._last_selected or targets != self._last_targets
+        )
         message_changed = message != self._last_message
 
-        if self._needs_full_redraw:
-            self._draw_full(board, highlighted)
+        redrew_board = (
+            self._needs_full_redraw
+            or fen_changed or highlight_changed or selection_changed
+        )
+        if redrew_board:
+            self._draw_full(board, highlighted, selected_square, targets)
             self._needs_full_redraw = False
-        elif fen_changed or highlight_changed:
-            self._draw_full(board, highlighted)
 
-        if message_changed or self._needs_full_redraw:
+        # `_draw_full` limpa a janela inteira, inclusive a barra de status:
+        # ela precisa ser redesenhada junto, mesmo com a mensagem igual.
+        if redrew_board or message_changed:
             self._draw_status_bar(board, message, message_type)
 
         # Atualiza estado para próxima comparação
         self._last_board_fen = current_fen
         self._last_highlighted = highlighted
+        self._last_selected = selected_square
+        self._last_targets = targets
         self._last_message = message
 
         pygame.display.flip()
@@ -248,6 +268,8 @@ class ChessGUI:
         self,
         board: chess.Board,
         highlighted: set[int],
+        selected_square: Optional[int] = None,
+        targets: Optional[dict[int, bool]] = None,
     ) -> None:
         """Desenha o tabuleiro completo."""
         # Fundo
@@ -256,7 +278,9 @@ class ChessGUI:
         # Desenha casas e peças
         for rank in range(8):
             for file in range(8):
-                self._draw_square(board, file, rank, highlighted)
+                self._draw_square(
+                    board, file, rank, highlighted, selected_square, targets or {}
+                )
 
         # Coordenadas
         self._draw_coordinates()
@@ -267,6 +291,8 @@ class ChessGUI:
         file: int,
         rank: int,
         highlighted: set[int],
+        selected_square: Optional[int] = None,
+        targets: Optional[dict[int, bool]] = None,
     ) -> None:
         """Desenha uma casa do tabuleiro com sua peça."""
         # Calcula a posição visual (considerando flip)
@@ -291,11 +317,11 @@ class ChessGUI:
         # Destaque do último movimento
         square = chess.square(file, rank)
         if square in highlighted:
-            highlight_surface = pygame.Surface(
-                (self._square_size, self._square_size), pygame.SRCALPHA
-            )
-            highlight_surface.fill(HIGHLIGHT_COLOR)
-            self._screen.blit(highlight_surface, (x, y))
+            self._fill_square(x, y, HIGHLIGHT_COLOR)
+
+        # Destaque da casa de onde a peça foi levantada
+        if square == selected_square:
+            self._fill_square(x, y, SELECTED_SQUARE_COLOR)
 
         # Desenha a peça
         piece = board.piece_at(square)
@@ -317,6 +343,52 @@ class ChessGUI:
                 center=(x + self._square_size // 2, y + self._square_size // 2)
             )
             self._screen.blit(piece_surface, piece_rect)
+
+        # Marcador de destino legal — desenhado depois da peça, para que o
+        # anel de captura envolva a peça que seria capturada.
+        if targets and square in targets:
+            self._draw_move_hint(x, y, targets[square])
+
+    def _fill_square(
+        self,
+        x: int,
+        y: int,
+        color: tuple[int, int, int, int],
+    ) -> None:
+        """Cobre uma casa com uma cor semi-transparente."""
+        overlay = pygame.Surface(
+            (self._square_size, self._square_size), pygame.SRCALPHA
+        )
+        overlay.fill(color)
+        self._screen.blit(overlay, (x, y))
+
+    def _draw_move_hint(self, x: int, y: int, is_capture: bool) -> None:
+        """Desenha o marcador de um destino legal da peça levantada.
+
+        Segue a convenção dos tabuleiros online: ponto no centro para uma
+        casa livre, anel na borda para uma captura.
+
+        Args:
+            x, y: Canto superior esquerdo da casa, em pixels.
+            is_capture: True se o lance para esta casa captura uma peça.
+        """
+        overlay = pygame.Surface(
+            (self._square_size, self._square_size), pygame.SRCALPHA
+        )
+        center = (self._square_size // 2, self._square_size // 2)
+
+        if is_capture:
+            width = max(3, self._square_size // 12)
+            radius = self._square_size // 2 - width // 2 - 2
+            pygame.draw.circle(
+                overlay, CAPTURE_HINT_COLOR, center, radius, width
+            )
+        else:
+            pygame.draw.circle(
+                overlay, MOVE_HINT_COLOR, center, max(4, self._square_size // 7)
+            )
+
+        self._screen.blit(overlay, (x, y))
 
     def _draw_coordinates(self) -> None:
         """Desenha as coordenadas (a-h, 1-8) nas bordas do tabuleiro."""

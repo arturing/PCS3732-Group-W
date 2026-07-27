@@ -121,6 +121,10 @@ class ChessApplication:
         # tabuleiro, ainda não recolocadas).
         self._in_hand: list[MisplacedPiece] = []
 
+        # Casa de onde o jogador levantou a peça para jogar. Enquanto ela
+        # estiver na mão, a GUI destaca os destinos legais dessa peça.
+        self._lifted_square: Optional[str] = None
+
     def start(self) -> None:
         """Inicializa todos os módulos."""
         logger.info("Iniciando aplicação — Modo: %s", self.mode.name)
@@ -406,6 +410,10 @@ class ChessApplication:
         self._prune_misplaced()
         missing, extra = self._board_diff()
 
+        # Só o caso 3 abaixo é uma peça a caminho do destino; nos outros não
+        # há lance em andamento para destacar.
+        self._lifted_square = None
+
         # 1. Peça deslocada na mão: falta recolocá-la na casa de origem
         if self._in_hand:
             entry = self._in_hand[0]
@@ -427,8 +435,10 @@ class ChessApplication:
             )
             return
 
-        # 3. Peça levantada para jogar: movimento em andamento, não é erro
+        # 3. Peça levantada para jogar: movimento em andamento, não é erro.
+        #    A GUI destaca os destinos legais enquanto a peça está na mão.
         if not extra and len(missing) == 1:
+            self._lifted_square = missing[0]
             self._set_board_message(
                 f"Peça de {missing[0]} na mão — solte no destino", "info"
             )
@@ -509,12 +519,28 @@ class ChessApplication:
             return
         if message is None:
             message, message_type = self._current_status()
+
+        selected, targets = self._lifted_selection()
         self.gui.update(
             self.game_state.board,
             last_move=self.game_state.last_move,
             message=message,
             message_type=message_type,
+            selected_square=selected,
+            legal_targets=targets,
         )
+
+    def _lifted_selection(self) -> tuple[Optional[int], dict[int, bool]]:
+        """Casa da peça levantada e seus destinos legais, para a GUI destacar.
+
+        Fora do turno do jogador não há lance a sugerir: a peça pode ter sido
+        levantada por engano enquanto o oponente pensa.
+        """
+        if self._lifted_square is None or not self.game_state.is_player_turn:
+            return None, {}
+
+        square = chess.parse_square(self._lifted_square)
+        return square, self.game_state.get_legal_targets(square)
 
     def _handle_opponent_turn(self) -> None:
         """Processa o turno do oponente (engine ou Lichess)."""
