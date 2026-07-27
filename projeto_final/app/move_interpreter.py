@@ -231,6 +231,73 @@ class MoveInterpreter:
         return None
 
 
+# ---------------------------------------------------------------------------
+#  Instruções para o jogador
+# ---------------------------------------------------------------------------
+
+# Acima disso as casas são resumidas, para a instrução caber na barra de status
+MAX_LISTED_SQUARES = 3
+
+
+def _format_squares(squares: list[str]) -> str:
+    """Formata uma lista de casas em ordem, resumindo se forem muitas."""
+    ordered = sorted(squares)
+    if len(ordered) <= MAX_LISTED_SQUARES:
+        return ", ".join(ordered)
+    listed = ", ".join(ordered[:MAX_LISTED_SQUARES])
+    return f"{listed} e mais {len(ordered) - MAX_LISTED_SQUARES}"
+
+
+def build_undo_instruction(current: str, home: str) -> str:
+    """Instrução para levar uma peça deslocada de volta à casa de origem.
+
+    Só deve ser usada quando o par origem→destino é *conhecido* (foi
+    registrado quando o movimento ilegal aconteceu).
+    """
+    return f"mova a peça de {current} para {home}"
+
+
+def build_board_instruction(missing: list[str], extra: list[str]) -> str:
+    """Monta a instrução física que ressincroniza o tabuleiro.
+
+    Traduz a diferença entre os sensores e a posição esperada em uma ordem
+    no imperativo, do ponto de vista de quem está com as mãos no tabuleiro.
+
+    IMPORTANTE: nunca emparelha uma casa vazia com uma ocupada ("mova de X
+    para Y"). Os sensores só dizem *onde* há ímã, não *qual* peça é — um
+    palpite errado mandaria o jogador pôr uma peça numa casa que, no
+    tabuleiro virtual, é de outra, criando justamente a dessincronia que a
+    instrução deveria corrigir. Para o par conhecido existe
+    `build_undo_instruction`.
+
+    Args:
+        missing: Casas que deveriam ter peça mas estão vazias — o jogador
+                 precisa COLOCAR uma peça nelas.
+        extra: Casas ocupadas que deveriam estar vazias — o jogador precisa
+               REMOVER a peça delas (ex: peça capturada pelo oponente).
+
+    Returns:
+        Instrução em minúsculas (ex: "remova a peça de e4"), para poder ser
+        usada sozinha ou depois de um prefixo de causa. String vazia se não
+        houver nada a corrigir.
+    """
+    if not missing and not extra:
+        return ""
+
+    if extra and not missing:
+        alvo = "a peça" if len(extra) == 1 else "as peças"
+        return f"remova {alvo} de {_format_squares(extra)}"
+
+    if missing and not extra:
+        alvo = "uma peça" if len(missing) == 1 else "peças"
+        return f"coloque {alvo} em {_format_squares(missing)}"
+
+    return (
+        f"remova de {_format_squares(extra)} "
+        f"e coloque em {_format_squares(missing)}"
+    )
+
+
 def square_name_to_index(name: str) -> tuple[int, int]:
     """Converte nome de casa (ex: 'e4') para índice (coluna, linha).
 

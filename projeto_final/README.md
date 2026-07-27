@@ -31,7 +31,8 @@ app/
 
 ```
 mock/
-└── hardware_mock.py     # Simulação do processo C para testes
+├── hardware_mock.py     # Simulação do processo C para testes
+└── gui_mock.py          # GUI do mock: matriz 8×8 de botões (reed switches)
 ```
 
 ## Instalação
@@ -68,8 +69,14 @@ set CHESS_STOCKFISH_PATH=C:\caminho\para\stockfish.exe
 python -m app.main --mode stockfish
 ```
 
-O mock interativo será aberto automaticamente. Digite jogadas no formato
-UCI (ex: `e2e4`) no terminal para simular movimentos no tabuleiro.
+O mock do hardware é aberto automaticamente numa segunda janela: uma matriz
+8×8 de botões, um por casa. Cada botão representa um reed switch — clique
+para alternar entre pressionado (peça detectada) e solto (casa vazia).
+
+Para simular a jogada `e2e4`, clique em `e2` (a peça sai) e depois em `e4`
+(a peça chega) — a mesma sequência de dois eventos que o hardware real
+produziria. Se não houver display disponível, o mock cai automaticamente
+para o modo interativo por terminal.
 
 ### Opções de linha de comando
 
@@ -101,28 +108,99 @@ python -m app.main --mode lichess --token lip_seu_token
 O mock pode ser executado standalone para testes:
 
 ```bash
-# Modo interativo
+# Modo GUI — matriz de botões na tela (padrão)
+python -m mock.hardware_mock
+
+# Modo GUI com o tabuleiro invertido (útil jogando de pretas)
+python -m mock.hardware_mock --color black --flip
+
+# Modo interativo (comandos no terminal)
 python -m mock.hardware_mock --mode interactive
 
 # Modo automático (jogadas aleatórias)
-python -m mock.hardware_mock --mode auto --auto-moves 30
+python -m mock.hardware_mock --mode auto --auto-events 30
 
 # Modo scripted (sequência pré-definida)
 python -m mock.hardware_mock --mode scripted --moves e2e4 e7e5 g1f3 b8c6
 ```
 
+#### Mock em modo GUI
+
+Cada casa é um botão que reflete o estado do seu reed switch:
+
+| Aparência | Significado |
+|-----------|-------------|
+| Afundado, com LED verde | Sensor ativo — ímã/peça detectada |
+| Em relevo, sem LED | Sensor inativo — casa vazia |
+
+| Interação | Ação |
+|-----------|------|
+| Clique numa casa | Alterna o sensor e envia o evento IPC |
+| Arrastar com o botão pressionado | Aplica o mesmo estado às casas percorridas |
+| `Reset` / `R` | Volta os sensores ao estado inicial |
+| `Limpar` / `C` | Desliga todos os sensores |
+| `Inverter` / `F` | Inverte a orientação do tabuleiro |
+| `Sair` / `Esc` / `Q` | Encerra o mock |
+
+A barra inferior mostra o último evento enviado por stdout e a contagem de
+sensores ativos. O tamanho do tabuleiro é ajustável por
+`CHESS_MOCK_BOARD_SIZE`.
+
 #### Comandos do mock interativo
 
 | Comando | Descrição |
 |---------|-----------|
-| `e2e4` | Simula movimento do jogador (gera evento IPC) |
-| `opp e7e5` | Aplica movimento do oponente (sem evento) |
+| `e2e4` | Simula movimento (origem→destino, gera evento IPC) |
+| `on e4` | Ativa o sensor em e4 (coloca peça) |
+| `off e4` | Desativa o sensor em e4 (remove peça) |
 | `board` | Exibe estado dos sensores |
-| `chess` | Exibe tabuleiro completo |
-| `legal` | Lista movimentos legais |
-| `fen` | Exibe FEN atual |
-| `auto` | Joga partida automática |
+| `reset` | Volta ao estado inicial |
+| `help` | Lista os comandos |
 | `quit` | Encerrar |
+
+## Instruções na barra de status
+
+A barra inferior da GUI diz o que fazer **no tabuleiro físico** para que ele
+volte à posição que o jogo espera. A instrução tem prioridade sobre qualquer
+outra mensagem enquanto o tabuleiro estiver diferente do esperado.
+
+Uma instrução por vez, na ordem do que precisa ser feito: a peça que está na
+mão, as peças deslocadas (que bloqueiam o jogo) e depois a diferença nos
+sensores.
+
+| Situação nos sensores | Mensagem exibida |
+|-----------------------|------------------|
+| Uma peça foi levantada | `Peça de e2 na mão — solte no destino` |
+| Peça capturada pelo oponente ainda no tabuleiro | `Remova a peça de d5` |
+| Movimento ilegal (registrado no histórico) | `Desfaça o movimento ilegal — mova a peça de e5 para e2` |
+| Lance tentado com o tabuleiro fora da posição | `Arrume o tabuleiro antes de jogar (2 pendentes) — mova a peça de f3 para g1` |
+| Peça deslocada na mão | `Desfaça o movimento ilegal — coloque a peça em e2` |
+| Casas erradas sem par conhecido | `Tabuleiro fora de sincronia — remova de f1, g1 e coloque em e1, h1` |
+| Tudo no lugar novamente | `Tabuleiro na posição certa — sua vez` |
+
+Avisos do jogo entram como prefixo (`Xeque! Remova a peça de e2`). As mesmas
+instruções vão para o log, o que as torna visíveis também com `--no-gui`.
+
+### Histórico de peças deslocadas
+
+Quando o tabuleiro virtual recusa um lance, o par origem→destino é guardado
+num histórico de peças deslocadas. Isso tem duas consequências:
+
+- **O jogo fica bloqueado até o tabuleiro voltar à posição.** Enquanto houver
+  peça deslocada, nenhum lance novo é aplicado: a peça movida também entra no
+  histórico (como `bloqueado`) e recebe sua própria instrução de devolução. As
+  devoluções são pedidas da mais recente para a mais antiga — a peça mais nova
+  pode estar justamente na casa de origem de uma anterior.
+- **A instrução nunca inventa emparelhamento.** `mova a peça de X para Y` só
+  é dito quando X e Y foram registrados juntos, no momento do lance ilegal.
+  Para uma diferença qualquer nos sensores, a instrução é `remova de ... e
+  coloque em ...`: os reed switches dizem *onde* há ímã, não *qual* peça é, e
+  um palpite errado mandaria pôr a peça numa casa que, no tabuleiro virtual, é
+  de outra — criando a dessincronia que a instrução deveria corrigir.
+
+O registro é descartado quando não há mais para onde voltar — o oponente
+capturou a peça deslocada, ou o jogador já pôs outra peça na casa de origem.
+Nos dois casos a instrução passa a ser só `remova a peça de e5`.
 
 ## Protocolo IPC
 
@@ -158,14 +236,26 @@ casa:estado,casa:estado\n
 | `CHESS_STOCKFISH_SKILL` | Nível de habilidade (0-20) | (não configurado) |
 | `CHESS_LICHESS_TOKEN` | Token OAuth2 Lichess | (vazio) |
 | `CHESS_BOARD_SIZE` | Tamanho do tabuleiro (px) | `640` |
+| `CHESS_MOCK_BOARD_SIZE` | Tamanho da matriz de botões do mock (px) | `560` |
 
-## Teclas de Atalho (GUI)
+## Teclas de Atalho
+
+### GUI da aplicação
 
 | Tecla | Ação |
 |-------|------|
 | `F` | Inverter tabuleiro |
 | `ESC` | Fechar aplicação |
 | `Q/R/B/N` | Selecionar peça de promoção |
+
+### GUI do mock (matriz de botões)
+
+| Tecla | Ação |
+|-------|------|
+| `R` | Reset dos sensores |
+| `C` | Limpar (desliga todos) |
+| `F` | Inverter tabuleiro |
+| `ESC` / `Q` | Encerrar o mock |
 
 ## Compatibilidade
 

@@ -9,6 +9,12 @@ regras de xadrez, movimentos legais ou turnos. Ele apenas:
   2. Permite ao usuário alterar o estado das casas
   3. Envia as mudanças via stdout no formato IPC
 
+Modos de operação:
+  - gui         : matriz de 64 botões na tela (padrão) — ver gui_mock.py
+  - interactive : comandos digitados no terminal
+  - auto        : eventos aleatórios
+  - scripted    : sequência pré-definida de movimentos
+
 Protocolo de saída (stdout):
     casa:estado,casa:estado\n
     Exemplo: "e2:0,e4:1\n"
@@ -170,6 +176,62 @@ def parse_move_input(cmd: str) -> tuple[str, str] | None:
 # ---------------------------------------------------------------------------
 #  Modos de execução
 # ---------------------------------------------------------------------------
+
+def run_gui(occupied_ranks: list[str], flip: bool = False) -> bool:
+    """Modo GUI: matriz de 64 botões na tela, um por casa do tabuleiro.
+
+    Cada botão fica pressionado (sensor ativo) ou solto (casa vazia).
+    Clicar alterna o sensor e emite o evento IPC correspondente.
+
+    Args:
+        occupied_ranks: Fileiras inicialmente ocupadas.
+        flip: Se True, desenha o tabuleiro invertido (fileira 1 no topo).
+
+    Returns:
+        True se a GUI rodou; False se ela não está disponível (pygame
+        ausente ou sem display), caso em que o chamador pode cair no
+        modo interativo.
+    """
+    # O mock roda tanto como módulo (`python -m mock.hardware_mock`) quanto
+    # como script (`python mock/hardware_mock.py`, como faz o ipc_reader).
+    # Os dois casos têm sys.path diferentes, daí as duas formas de import.
+    try:
+        try:
+            from mock.gui_mock import SensorBoardGUI, GUIUnavailable
+        except ImportError:
+            from gui_mock import SensorBoardGUI, GUIUnavailable
+    except ImportError as exc:
+        logger.warning("GUI indisponível (%s).", exc)
+        return False
+
+    grid = SensorGrid()
+    grid.set_initial_position(occupied_ranks)
+
+    ranks_desc = ", ".join(occupied_ranks)
+    logger.info(
+        "Modo GUI — fileiras com peças: %s. Eventos IPC vão para stdout.",
+        ranks_desc,
+    )
+
+    gui = SensorBoardGUI(
+        grid,
+        send_event,
+        initial_state=dict(grid.state),
+        flip=flip,
+        info=f"peças nas fileiras {ranks_desc}  ·  eventos -> stdout",
+    )
+
+    try:
+        gui.run()
+    except GUIUnavailable as exc:
+        logger.warning("GUI indisponível (%s).", exc)
+        return False
+    except KeyboardInterrupt:
+        pass
+
+    print("Mock encerrado.", file=sys.stderr)
+    return True
+
 
 def run_interactive(occupied_ranks: list[str]) -> None:
     """Modo interativo: o usuário digita comandos no terminal.
@@ -378,9 +440,14 @@ if __name__ == "__main__":
              "ocupadas (padrão: white → fileiras 1,2).",
     )
     parser.add_argument(
-        "--mode", choices=["interactive", "auto", "scripted"],
-        default="interactive",
-        help="Modo de operação (padrão: interactive).",
+        "--mode", choices=["gui", "interactive", "auto", "scripted"],
+        default="gui",
+        help="Modo de operação (padrão: gui — matriz de botões na tela; "
+             "cai para interactive se não houver display).",
+    )
+    parser.add_argument(
+        "--flip", action="store_true",
+        help="Inverte o tabuleiro na GUI (fileira 1 no topo).",
     )
     parser.add_argument(
         "--moves", nargs="*", default=None,
@@ -403,7 +470,12 @@ if __name__ == "__main__":
     if hasattr(signal, "SIGPIPE"):
         signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
-    if args.mode == "interactive":
+    if args.mode == "gui":
+        # Sem pygame ou sem display (ex: SSH sem X), usa o terminal.
+        if not run_gui(ranks, flip=args.flip):
+            logger.info("Caindo para o modo interativo (terminal).")
+            run_interactive(ranks)
+    elif args.mode == "interactive":
         run_interactive(ranks)
     elif args.mode == "auto":
         run_auto(ranks, args.auto_events)

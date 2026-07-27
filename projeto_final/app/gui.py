@@ -397,11 +397,40 @@ class ChessGUI:
             else:
                 msg_color = TEXT_COLOR
 
-            msg_surface = self._font_message.render(message, True, msg_color)
+            # Espaço livre até onde o texto da esquerda termina
+            left_edge = max(
+                31 + turn_surface.get_width(), 10 + move_surface.get_width()
+            )
+            available = self._window_width - 15 - left_edge - 12
+
+            msg_surface = self._render_fitted(message, msg_color, available)
             msg_rect = msg_surface.get_rect(
                 midright=(self._window_width - 15, bar_y + STATUS_BAR_HEIGHT // 2)
             )
             self._screen.blit(msg_surface, msg_rect)
+
+    def _render_fitted(
+        self,
+        message: str,
+        color: tuple[int, int, int],
+        max_width: int,
+    ) -> "pygame.Surface":
+        """Renderiza a mensagem cabendo em `max_width`.
+
+        As instruções para o jogador podem ser longas ("remova de a1, b2 e
+        coloque em c3, d4"); reduz o corpo da fonte e, em último caso, corta
+        o texto com reticências, para não invadir o lado esquerdo da barra.
+        """
+        for font in (self._font_message, self._font_status, self._font_coords):
+            if font.size(message)[0] <= max_width:
+                return font.render(message, True, color)
+
+        # Reticências em ASCII: nem toda fonte do sistema tem U+2026.
+        font = self._font_coords
+        text = message
+        while text and font.size(text + "...")[0] > max_width:
+            text = text[:-1]
+        return font.render(f"{text}..." if text else "", True, color)
 
     def show_message(self, message: str, message_type: str = "info") -> None:
         """Exibe uma mensagem temporária na barra de status.
