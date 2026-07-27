@@ -201,6 +201,13 @@ class ChessGUI:
         table = PIECE_UNICODE if self._piece_font_path is not None else PIECE_ASCII
         return table[(piece.piece_type, piece.color)]
 
+    def set_flip(self, flip: bool) -> None:
+        """Define a orientação do tabuleiro (True = pretas embaixo)."""
+        if flip == self._flip:
+            return
+        self._flip = flip
+        self._needs_full_redraw = True
+
     def update(
         self,
         board: chess.Board,

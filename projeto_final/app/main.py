@@ -12,14 +12,16 @@ Integra todos os módulos da camada Python:
 Uso:
     python -m app.main --mode stockfish
     python -m app.main --mode lichess --token lip_xxxxx
+    python -m app.main --mode lichess --token lip_xxxxx --lichess-ai 3
     python -m app.main --mode stockfish --ipc subprocess
 """
 
 import argparse
 import logging
+import os
 import sys
 import time
-from queue import Queue
+from queue import Queue, Empty
 from typing import NamedTuple, Optional
 
 import chess
@@ -27,7 +29,9 @@ import chess
 from app.config import (
     GameMode, PlayerColor,
     IPC_MODE, STOCKFISH_PATH, STOCKFISH_TIME_LIMIT,
-    LICHESS_TOKEN,
+    LICHESS_TOKEN, LICHESS_TOKEN_ORIGIN, LICHESS_TIME_MINUTES, LICHESS_INCREMENT,
+    C_PROCESS_PATH, MOCK_PROCESS_PATH,
+    DEFAULT_TOKEN_FILES, read_token_file,
 )
 from app.ipc_reader import IPCReader
 from app.game_state import GameState
@@ -35,7 +39,9 @@ from app.move_interpreter import (
     MoveInterpreter, build_board_instruction, build_undo_instruction,
 )
 from app.stockfish_engine import StockfishEngine
-from app.lichess_client import LichessClient
+from app.lichess_client import (
+    LichessClient, LichessError, is_board_time_control, explain_time_control,
+)
 from app.gui import ChessGUI
 
 logger = logging.getLogger(__name__)
@@ -43,6 +49,22 @@ logger = logging.getLogger(__name__)
 # Motivos pelos quais uma peça está fora de lugar — definem a instrução exibida
 REASON_ILLEGAL = "ilegal"      # o lance foi recusado pelas regras do xadrez
 REASON_BLOCKED = "bloqueado"   # o lance foi feito com o tabuleiro fora da posição
+
+# Como o `status` de fim de partida do Lichess é apresentado ao jogador.
+# Um status ausente ou "started" significa partida em andamento.
+LICHESS_STATUS_LABELS = {
+    "mate": "Xeque-mate",
+    "resign": "Desistência",
+    "stalemate": "Empate por afogamento",
+    "timeout": "Tempo esgotado",
+    "outoftime": "Tempo esgotado",
+    "draw": "Empate",
+    "aborted": "Partida abortada",
+    "cheat": "Partida encerrada (trapaça detectada)",
+    "noStart": "Partida não iniciada",
+    "variantEnd": "Fim de partida (regra da variante)",
+    "unknownFinish": "Partida encerrada",
+}
 
 
 class PendingCastling(NamedTuple):
@@ -93,14 +115,19 @@ class ChessApplication:
         stockfish_path: str = STOCKFISH_PATH,
         stockfish_time: float = STOCKFISH_TIME_LIMIT,
         lichess_token: str = LICHESS_TOKEN,
+        lichess_token_origin: str = LICHESS_TOKEN_ORIGIN,
+        lichess_game_id: Optional[str] = None,
+        lichess_ai_level: Optional[int] = None,
+        lichess_challenge_user: Optional[str] = None,
+        lichess_rated: bool = False,
+        lichess_time: int = LICHESS_TIME_MINUTES,
+        lichess_increment: int = LICHESS_INCREMENT,
+        lichess_timeout: float = 180.0,
         no_gui: bool = False,
         flip_board: bool = False,
     ):
         self.mode = mode
         self.player_color = player_color
-        self._player_chess_color = (
-            chess.WHITE if player_color == PlayerColor.WHITE else chess.BLACK
-        )
 
         # Módulos
         self.game_state = GameState(player_color)
@@ -111,6 +138,16 @@ class ChessApplication:
         self.stockfish: Optional[StockfishEngine] = None
         self.lichess: Optional[LichessClient] = None
         self._lichess_events: Queue = Queue()
+        self._lichess_game_id = lichess_game_id
+        self._lichess_ai_level = lichess_ai_level
+        self._lichess_challenge_user = lichess_challenge_user
+        self._lichess_rated = lichess_rated
+        self._lichess_time = lichess_time
+        self._lichess_increment = lichess_increment
+        self._lichess_timeout = lichess_timeout
+        self._lichess_user_id: Optional[str] = None
+        self._opponent_name = "oponente"
+        self._draw_offered = False
 
         if mode == GameMode.STOCKFISH:
             self.stockfish = StockfishEngine(
@@ -118,16 +155,26 @@ class ChessApplication:
                 time_limit=stockfish_time,
             )
         elif mode == GameMode.LICHESS:
-            self.lichess = LichessClient(token=lichess_token)
+            self.lichess = LichessClient(
+                token=lichess_token, token_origin=lichess_token_origin
+            )
 
-        # GUI
+        # GUI. `_flip_arg` inverte a orientação *padrão*, que é a perspectiva
+        # do jogador físico — daí ela ser recalculada quando a cor muda.
         self._no_gui = no_gui
+        self._flip_arg = flip_board
+        self._gui_started = False
         self.gui: Optional[ChessGUI] = None
         if not no_gui:
-            self.gui = ChessGUI(flip_board=flip_board)
+            self.gui = ChessGUI(flip_board=self._orientation_flip())
 
         self._running = False
         self.physical_board_state = self.game_state.get_expected_sensor_state()
+
+        # Fim de partida que o tabuleiro virtual sozinho não tem como deduzir:
+        # decidido pelo servidor (desistência, tempo) ou por falha da engine.
+        self._end_reason: Optional[str] = None
+        self._end_message_type = "success"
 
         # Instrução física corrente ("remova a peça de e4", ...) e sua
         # severidade. Vazia quando o tabuleiro está sincronizado.
@@ -158,6 +205,7 @@ class ChessApplication:
         # GUI
         if self.gui:
             self.gui.start()
+            self._gui_started = True
             self._refresh_gui("Inicializando...")
 
         # Engine
@@ -171,18 +219,13 @@ class ChessApplication:
                 )
                 raise
 
-        # Lichess
+        # Lichess — precisa vir antes do IPC: é aqui que a cor das peças
+        # físicas é decidida, e o mock do hardware é iniciado com ela.
         if self.lichess:
-            try:
-                account = self.lichess.get_account()
-                username = account.get("username", "?")
-                logger.info("Conectado ao Lichess como: %s", username)
-                self._refresh_gui(f"Lichess: {username} — Buscando partida...")
-            except Exception as exc:
-                logger.error("Erro ao conectar ao Lichess: %s", exc)
-                raise
+            self._start_lichess()
 
         # IPC
+        self.ipc_reader.set_process_args(self._hardware_process_args())
         self.ipc_reader.start()
 
         self._running = True
@@ -191,6 +234,20 @@ class ChessApplication:
         self._refresh_gui()
 
         logger.info("Aplicação inicializada com sucesso.")
+
+    def _hardware_process_args(self) -> list[str]:
+        """Argumentos do subprocesso de hardware.
+
+        Só são passados para o mock — o processo C de verdade não conhece
+        esses parâmetros. Sem eles, o mock sempre nasceria com as peças nas
+        fileiras 1 e 2, o que quebraria qualquer partida jogada de pretas.
+        """
+        if C_PROCESS_PATH != MOCK_PROCESS_PATH:
+            return []
+        args = ["--color", self.player_color.value]
+        if self.player_color == PlayerColor.BLACK:
+            args.append("--flip")
+        return args
 
     def run(self) -> None:
         """Loop principal do jogo."""
@@ -204,20 +261,26 @@ class ChessApplication:
                         logger.info("Usuário fechou a janela.")
                         break
 
+                # Eventos vindos do Lichess (jogadas do oponente, fim de
+                # partida) chegam a qualquer momento, não só no turno dele.
+                if self.lichess:
+                    self._drain_lichess_events()
+
                 # Verifica fim de jogo
-                if self.game_state.is_game_over:
-                    result = self.game_state.get_result()
-                    self._refresh_gui(result, "success")
+                if self._end_reason or self.game_state.is_game_over:
+                    result = self._end_reason or self.game_state.get_result()
+                    self._refresh_gui(result, self._end_message_type)
                     logger.info("Fim de jogo: %s", result)
                     # Mantém a janela aberta até o usuário fechar
                     self._wait_for_close()
                     break
 
-                # Turno do jogador físico
-                if self.game_state.is_player_turn:
-                    self._handle_player_turn()
-                else:
-                    # Turno do oponente
+                # O tabuleiro físico é lido sempre, inclusive fora do turno do
+                # jogador: a peça capturada pelo oponente precisa sair da mesa
+                # enquanto ele ainda está pensando.
+                self._poll_physical_board()
+
+                if not self.game_state.is_player_turn:
                     self._handle_opponent_turn()
 
                 # Pequena pausa para não sobrecarregar a CPU
@@ -227,11 +290,19 @@ class ChessApplication:
             logger.info("Interrompido pelo usuário.")
         except Exception as exc:
             logger.error("Erro fatal: %s", exc, exc_info=True)
+            self._show_fatal_error(exc)
         finally:
             self.stop()
 
-    def _handle_player_turn(self) -> None:
-        """Processa o turno do jogador físico.
+    def _show_fatal_error(self, exc: Exception) -> None:
+        """Deixa o erro na tela até o usuário fechar a janela."""
+        if not self.gui or not self._gui_started:
+            return
+        self._refresh_gui(f"Erro: {exc}", "error")
+        self._wait_for_close()
+
+    def _poll_physical_board(self) -> None:
+        """Lê o tabuleiro físico e reage à diferença.
 
         Lê eventos do IPC, atualiza o estado físico dos sensores
         e compara com o tabuleiro esperado. Se a diferença for um
@@ -342,19 +413,28 @@ class ChessApplication:
     def _commit_move(self, move: chess.Move) -> bool:
         """Aplica o lance ao tabuleiro virtual e propaga o efeito.
 
+        No modo Lichess o lance é enviado ao servidor ANTES de entrar no
+        tabuleiro virtual: se o servidor recusar, o estado local continua
+        igual ao dele, e a recusa vira um lance ilegal como qualquer outro —
+        o jogador é instruído a desfazê-lo no tabuleiro físico.
+
         Returns:
             True se o lance foi aplicado.
         """
+        if not self.game_state.is_legal_move(move):
+            return False
+
+        if self.lichess and not self.lichess.send_move(move.uci()):
+            logger.error("Lichess rejeitou a jogada: %s", move.uci())
+            return False
+
         if not self.game_state.apply_move(move):
             return False
 
         logger.info("Jogada do jogador aplicada: %s", move.uci())
         self._sync_mirror_to_board()
         self._set_board_message("", "info")
-
-        if self.lichess:
-            if not self.lichess.send_move(move.uci()):
-                logger.error("Lichess rejeitou a jogada: %s", move.uci())
+        self._draw_offered = False
         return True
 
     def _castling_squares(self, move: chess.Move) -> PendingCastling:
@@ -713,11 +793,13 @@ class ChessApplication:
         return square, self.game_state.get_legal_targets(square)
 
     def _handle_opponent_turn(self) -> None:
-        """Processa o turno do oponente (engine ou Lichess)."""
+        """Processa o turno do oponente.
+
+        Só o Stockfish local precisa ser acionado aqui. As jogadas do Lichess
+        chegam pelo stream, drenado a cada volta do loop principal.
+        """
         if self.mode == GameMode.STOCKFISH:
             self._handle_stockfish_turn()
-        elif self.mode == GameMode.LICHESS:
-            self._handle_lichess_turn()
 
     def _handle_stockfish_turn(self) -> None:
         """Obtém e aplica a jogada do Stockfish."""
@@ -742,45 +824,373 @@ class ChessApplication:
             self._refresh_gui()
 
         except Exception as exc:
+            # Sem tratamento o loop chamaria a engine de novo imediatamente,
+            # virando um laço de erro: o turno não avança sozinho.
             logger.error("Erro ao obter jogada do Stockfish: %s", exc)
-            self._refresh_gui(f"Erro Stockfish: {exc}", "error")
+            self._end_reason = f"Erro no Stockfish: {exc}"
+            self._end_message_type = "error"
 
-    def _handle_lichess_turn(self) -> None:
-        """Recebe e aplica a jogada do oponente via Lichess."""
-        # Por enquanto, verifica a fila de eventos do Lichess
-        try:
-            event = self._lichess_events.get(timeout=0.1)
-        except Exception:
-            self._refresh_gui("Aguardando oponente...")
+    # -- Lichess ------------------------------------------------------------
+
+    def _start_lichess(self) -> None:
+        """Conecta ao Lichess, obtém uma partida e abre o stream dela.
+
+        Ordem de preferência para a partida: a informada em `--lichess-game`,
+        uma que já esteja em andamento na conta (o stream de eventos reenvia
+        as partidas abertas ao conectar), a IA do Lichess (`--lichess-ai`) e,
+        por fim, um seek à espera de um humano.
+
+        Raises:
+            LichessError: Se nenhuma partida for obtida.
+        """
+        account = self.lichess.get_account()
+        logger.info("Conectado ao Lichess como: %s", self.lichess.username)
+        self._refresh_gui(f"Lichess: {self.lichess.username} — conectando...")
+
+        self._lichess_user_id = account.get("id")
+        self.lichess.start_account_stream()
+
+        if self._lichess_game_id:
+            self.lichess.set_game_id(self._lichess_game_id)
+            logger.info("Acompanhando a partida informada: %s", self._lichess_game_id)
+        else:
+            game = None
+
+            # Uma partida já aberta é anunciada logo na conexão do stream, o
+            # que permite continuar no tabuleiro uma partida começada no site.
+            # Quem pediu uma partida contra a IA quer uma partida nova, então
+            # aí essa busca é pulada.
+            if self._lichess_ai_level is None and not self._lichess_challenge_user:
+                game = self._await_lichess_game(
+                    3.0, "Procurando partidas em aberto..."
+                )
+                if game:
+                    logger.info("Retomando partida em andamento: %s", game["gameId"])
+
+            if not game:
+                game = self._create_lichess_game()
+
+            if not game:
+                raise LichessError(
+                    self.lichess.seek_error
+                    or "Nenhuma partida foi iniciada dentro do tempo de espera."
+                )
+
+        # A cor anunciada no gameStart é só uma dica: quem decide é o gameFull,
+        # que traz os dois jogadores e é o primeiro evento do stream da partida.
+        self.lichess.start_game_stream(self._lichess_events.put)
+        self._await_game_full()
+
+    def _create_lichess_game(self) -> Optional[dict]:
+        """Cria a partida: desafio direto, desafio à IA, ou seek por um humano."""
+        color = self.player_color.value
+
+        if self._lichess_challenge_user:
+            challenge = self.lichess.create_challenge(
+                username=self._lichess_challenge_user,
+                time_minutes=self._lichess_time,
+                increment=self._lichess_increment,
+                rated=self._lichess_rated,
+                color=color,
+            )
+            url = challenge.get("url", "")
+            logger.info(
+                "Aceite o desafio com a conta %s%s",
+                self._lichess_challenge_user, f" em {url}" if url else "",
+            )
+            return self._await_lichess_game(
+                self._lichess_timeout,
+                f"Aguardando {self._lichess_challenge_user} aceitar o "
+                f"desafio... Esc cancela",
+            )
+
+        if self._lichess_ai_level is not None:
+            self.lichess.challenge_ai(
+                level=self._lichess_ai_level,
+                time_minutes=self._lichess_time,
+                increment=self._lichess_increment,
+                color=color,
+            )
+            self._refresh_gui("Partida contra a IA do Lichess criada.")
+            return {"gameId": self.lichess.game_id}
+
+        # O seek não escolhe cor: quem sorteia é o pareamento do Lichess.
+        self.lichess.create_seek(
+            time_minutes=self._lichess_time,
+            increment=self._lichess_increment,
+            rated=self._lichess_rated,
+        )
+        return self._await_lichess_game(
+            self._lichess_timeout,
+            f"Buscando oponente no Lichess ({self._lichess_time}+"
+            f"{self._lichess_increment})... Esc cancela",
+        )
+
+    def _await_lichess_game(
+        self,
+        timeout: float,
+        message: str,
+    ) -> Optional[dict]:
+        """Espera um `gameStart`, mantendo a GUI viva durante a espera.
+
+        Returns:
+            Dados da partida, ou None se o tempo acabou ou o usuário fechou
+            a janela.
+        """
+        self._refresh_gui(message)
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() < deadline:
+            if self.gui and not self.gui.handle_events():
+                logger.info("Busca de partida cancelada pelo usuário.")
+                return None
+            game = self.lichess.wait_for_game_start(timeout=0.2)
+            if game:
+                return game
+            if self.lichess.seek_error:
+                # Não adianta esperar o oponente: o seek nem chegou a existir.
+                return None
+            self._refresh_gui(message)
+
+        return None
+
+    def _await_game_full(self, timeout: float = 15.0) -> None:
+        """Consome o stream até o `gameFull`, que define a cor do jogador.
+
+        Sem ele não dá para montar o tabuleiro físico nem saber de quem é a
+        vez, então vale bloquear a inicialização até ele chegar.
+
+        Raises:
+            LichessError: Se o `gameFull` não chegar a tempo.
+        """
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() < deadline:
+            if self.gui and not self.gui.handle_events():
+                raise LichessError("Inicialização cancelada pelo usuário.")
+            try:
+                event = self._lichess_events.get(timeout=0.2)
+            except Empty:
+                continue
+
+            self._handle_lichess_event(event)
+            if event.get("type") == "gameFull":
+                return
+
+        raise LichessError(
+            "O Lichess não enviou o estado da partida (gameFull) a tempo."
+        )
+
+    def _drain_lichess_events(self) -> None:
+        """Consome todos os eventos da partida que já chegaram."""
+        while True:
+            try:
+                event = self._lichess_events.get_nowait()
+            except Empty:
+                return
+            self._handle_lichess_event(event)
+
+    def _handle_lichess_event(self, event: dict) -> None:
+        """Despacha um evento do stream da partida."""
+        event_type = event.get("type")
+
+        if event_type == "gameFull":
+            self._apply_game_full(event)
+        elif event_type == "gameState":
+            self._apply_game_state(event)
+        elif event_type == "chatLine":
+            logger.info(
+                "Chat (%s): %s", event.get("username", "?"), event.get("text", "")
+            )
+        elif event_type == "opponentGone":
+            gone = event.get("gone")
+            logger.info("Oponente %s.", "saiu da partida" if gone else "voltou")
+        else:
+            logger.debug("Evento do Lichess ignorado: %s", event_type)
+
+    def _apply_game_full(self, event: dict) -> None:
+        """Processa o estado completo da partida (primeiro evento do stream)."""
+        self._resolve_lichess_color(event)
+
+        initial_fen = event.get("initialFen") or "startpos"
+        if initial_fen != "startpos":
+            logger.warning(
+                "Partida com posição inicial customizada: %s", initial_fen
+            )
+            self.game_state.reset(initial_fen)
+            self.physical_board_state = self.game_state.get_expected_sensor_state()
+
+        self._apply_game_state(event.get("state") or {})
+
+    def _apply_game_state(self, state: dict) -> None:
+        """Aplica uma atualização de estado: novas jogadas e fim de partida."""
+        self._sync_moves_from_lichess((state.get("moves") or "").split())
+
+        status = state.get("status") or "started"
+        if status != "started":
+            self._end_lichess_game(status, state.get("winner"))
             return
 
-        if event.get("type") == "gameState":
-            moves_str = event.get("moves", "")
-            moves_list = moves_str.split()
+        self._note_draw_offer(state)
+        self._update_board_instruction()
+        self._refresh_gui()
 
-            # A última jogada é do oponente
-            if moves_list:
-                last_move_uci = moves_list[-1]
-                try:
-                    move = chess.Move.from_uci(last_move_uci)
-                    if move in self.game_state.board.legal_moves:
-                        self.game_state.apply_move(move)
+    def _sync_moves_from_lichess(self, moves: list[str]) -> None:
+        """Alinha o tabuleiro virtual com a lista de lances do servidor.
 
-                        # Pode ter capturado uma peça do jogador
-                        self._update_board_instruction()
-                        self._refresh_gui()
-                except (ValueError, chess.InvalidMoveError) as exc:
-                    logger.error("Jogada Lichess inválida: %s", exc)
+        O Lichess manda a partida inteira a cada atualização. Comparar com o
+        histórico local resolve de uma vez os dois casos: o eco do lance que o
+        próprio jogador acabou de enviar (já aplicado, é pulado) e as jogadas
+        novas do oponente.
+        """
+        applied = len(self.game_state.move_history)
+
+        if len(moves) < applied:
+            logger.warning(
+                "Lichess reportou %d lances contra %d aplicados localmente "
+                "(takeback?) — o estado local não é mais confiável.",
+                len(moves), applied,
+            )
+            return
+
+        for uci in moves[applied:]:
+            try:
+                move = chess.Move.from_uci(uci)
+            except ValueError:
+                logger.error("Lance inválido vindo do Lichess: %s", uci)
+                return
+
+            if not self.game_state.apply_move(move):
+                logger.error(
+                    "Lance %s do Lichess é ilegal na posição local — os "
+                    "estados divergiram.", uci,
+                )
+                self._set_board_message(
+                    "Estado divergiu do Lichess — reinicie a aplicação.", "error"
+                )
+                return
+
+            logger.info("Jogada recebida do Lichess: %s", uci)
+
+    def _resolve_lichess_color(self, game_full: dict) -> None:
+        """Descobre com qual cor a conta está jogando e adapta a aplicação."""
+        white = game_full.get("white") or {}
+        black = game_full.get("black") or {}
+        user_id = self._lichess_user_id
+
+        if user_id and white.get("id") == user_id:
+            color = PlayerColor.WHITE
+        elif user_id and black.get("id") == user_id:
+            color = PlayerColor.BLACK
+        elif self.lichess.player_color in ("white", "black"):
+            color = PlayerColor(self.lichess.player_color)
+        else:
+            color = self.player_color
+            logger.warning(
+                "Não foi possível identificar a cor pela partida; "
+                "mantendo %s.", color.value,
+            )
+
+        self._opponent_name = self._describe_lichess_player(
+            black if color == PlayerColor.WHITE else white
+        )
+        logger.info(
+            "Partida %s — você joga de %s contra %s.",
+            self.lichess.game_id,
+            "brancas" if color == PlayerColor.WHITE else "pretas",
+            self._opponent_name,
+        )
+        self._set_player_color(color)
+
+    @staticmethod
+    def _describe_lichess_player(info: dict) -> str:
+        """Nome legível de um jogador do Lichess (humano ou IA)."""
+        ai_level = info.get("aiLevel")
+        if ai_level is not None:
+            return f"IA do Lichess (nível {ai_level})"
+
+        name = info.get("name") or info.get("id") or "oponente"
+        rating = info.get("rating")
+        return f"{name} ({rating})" if rating else name
+
+    def _set_player_color(self, color: PlayerColor) -> None:
+        """Reconfigura a aplicação para a cor das peças físicas.
+
+        No modo Lichess quem escolhe a cor é o servidor, então ela pode não
+        ser a pedida em `--color`. Nesse caso o tabuleiro físico precisa ser
+        remontado com as outras peças — e todo o estado que dependia da cor
+        antiga (espelho dos sensores, pendências) é descartado.
+        """
+        if color == self.player_color:
+            if self.gui:
+                self.gui.set_flip(self._orientation_flip())
+            return
+
+        logger.warning(
+            "O Lichess atribuiu as %s: monte o tabuleiro físico com essas peças.",
+            "brancas" if color == PlayerColor.WHITE else "pretas",
+        )
+
+        self.player_color = color
+        self.game_state.set_player_color(color)
+        self.physical_board_state = self.game_state.get_expected_sensor_state()
+        self._misplaced.clear()
+        self._in_hand.clear()
+        self._pending_castling = None
+        self._lifted_square = None
+
+        if self.gui:
+            self.gui.set_flip(self._orientation_flip())
+
+    def _orientation_flip(self) -> bool:
+        """Se a GUI deve desenhar as pretas embaixo.
+
+        O padrão é a perspectiva do jogador físico; `--flip` inverte isso.
+        """
+        is_black = self.player_color == PlayerColor.BLACK
+        return is_black != self._flip_arg
+
+    def _note_draw_offer(self, state: dict) -> None:
+        """Registra no log uma proposta de empate feita pelo oponente."""
+        offering = (
+            state.get("bdraw") if self.player_color == PlayerColor.WHITE
+            else state.get("wdraw")
+        )
+        if bool(offering) == self._draw_offered:
+            return
+        self._draw_offered = bool(offering)
+        if self._draw_offered:
+            logger.info(
+                "%s ofereceu empate — responda pelo site do Lichess.",
+                self._opponent_name,
+            )
+
+    def _end_lichess_game(self, status: str, winner: Optional[str]) -> None:
+        """Traduz o fim de partida reportado pelo servidor."""
+        label = LICHESS_STATUS_LABELS.get(status, status)
+
+        if winner in ("white", "black"):
+            player_won = (
+                (winner == "white") == (self.player_color == PlayerColor.WHITE)
+            )
+            self._end_reason = (
+                f"{label} — {'você venceu!' if player_won else 'você perdeu.'}"
+            )
+        else:
+            self._end_reason = label
+
+        logger.info(
+            "Partida encerrada no Lichess: %s (status=%s, winner=%s)",
+            self._end_reason, status, winner,
+        )
 
     def _get_turn_message(self) -> str:
         """Retorna mensagem indicando de quem é o turno."""
         if self.game_state.is_player_turn:
             return "Sua vez — faça um movimento no tabuleiro"
-        else:
-            if self.mode == GameMode.STOCKFISH:
-                return "Vez do Stockfish..."
-            else:
-                return "Aguardando oponente..."
+        if self.mode == GameMode.STOCKFISH:
+            return "Vez do Stockfish..."
+        return f"Aguardando {self._opponent_name}..."
 
     def _wait_for_close(self) -> None:
         """Aguarda o usuário fechar a janela após fim de jogo."""
@@ -811,6 +1221,78 @@ class ChessApplication:
         logger.info("Aplicação encerrada.")
 
 
+def _resolve_token(args, parser: argparse.ArgumentParser) -> tuple[str, str]:
+    """Decide de onde vem o token do Lichess.
+
+    A linha de comando vence a configuração do ambiente. Um --token-file
+    ilegível é erro em vez de silêncio: cair no token do ambiente jogaria a
+    partida na conta errada.
+
+    Returns:
+        Tupla (token, origem), para que a origem possa ser registrada no log.
+    """
+    if args.token:
+        if LICHESS_TOKEN and LICHESS_TOKEN != args.token:
+            # Um --token velho no histórico do shell sombreia silenciosamente
+            # o arquivo de token — e o 401 resultante não diz por quê.
+            logger.warning(
+                "--token na linha de comando tem precedência: o token de "
+                "%s está sendo ignorado.", LICHESS_TOKEN_ORIGIN,
+            )
+        return args.token, "--token (linha de comando)"
+
+    if args.token_file:
+        token = read_token_file(args.token_file)
+        if not token:
+            parser.error(
+                f"não foi possível ler um token de '{args.token_file}' "
+                f"(arquivo inexistente, vazio ou sem permissão de leitura)."
+            )
+        _warn_if_token_readable(args.token_file)
+        return token, f"--token-file ({args.token_file})"
+
+    return LICHESS_TOKEN, LICHESS_TOKEN_ORIGIN
+
+
+def _check_time_control(args, parser: argparse.ArgumentParser) -> None:
+    """Recusa cedo um controle de tempo que a Board API não aceita.
+
+    Vale a pena falhar aqui, antes de abrir a janela e conectar: o erro do
+    servidor é um 400 genérico, e a conta que ele faz não é óbvia.
+    """
+    if args.lichess_game is not None:
+        return  # partida já existe: o controle de tempo é o dela
+
+    if is_board_time_control(args.lichess_time, args.lichess_increment):
+        return
+
+    explanation = explain_time_control(args.lichess_time, args.lichess_increment)
+
+    if args.lichess_ai is None and args.lichess_challenge is None:
+        parser.error(explanation)
+
+    # Desafios (à IA ou a um usuário) passam por outro endpoint, que não foi
+    # verificado com esse limite — mas um tabuleiro físico não se opera em
+    # ritmo de blitz de qualquer forma.
+    logger.warning(
+        "%s (o desafio pode até ser criado, mas provavelmente não será "
+        "jogável pelo tabuleiro).", explanation,
+    )
+
+
+def _warn_if_token_readable(path: str) -> None:
+    """Avisa se o arquivo de token está legível por outros usuários."""
+    try:
+        mode = os.stat(path).st_mode
+    except OSError:
+        return
+    if mode & 0o077:
+        logger.warning(
+            "O arquivo de token '%s' é legível por outros usuários. "
+            "Restrinja com: chmod 600 %s", path, path,
+        )
+
+
 def main() -> None:
     """Ponto de entrada principal via linha de comando."""
     parser = argparse.ArgumentParser(
@@ -821,8 +1303,10 @@ Exemplos de uso:
   python -m app.main --mode stockfish
   python -m app.main --mode stockfish --stockfish-path /usr/bin/stockfish
   python -m app.main --mode stockfish --ipc subprocess --stockfish-time 2.0
-  python -m app.main --mode lichess --token lip_xxxxx
-  python -m app.main --mode stockfish --color black --flip
+  python -m app.main --mode stockfish --color black
+  python -m app.main --mode lichess --token lip_xxxxx --lichess-ai 3
+  python -m app.main --mode lichess --token lip_xxxxx --lichess-time 5
+  python -m app.main --mode lichess --token lip_xxxxx --lichess-game AbCdEfGh
         """,
     )
 
@@ -834,12 +1318,14 @@ Exemplos de uso:
     parser.add_argument(
         "--color", choices=["white", "black"],
         default="white",
-        help="Cor das peças do jogador físico (padrão: white).",
+        help="Cor das peças do jogador físico (padrão: white). No modo "
+             "lichess vale só para --lichess-ai: procurando um humano, a cor "
+             "é sorteada pelo pareamento do Lichess.",
     )
     parser.add_argument(
         "--ipc", choices=["subprocess", "stdin", "pipe"],
-        default="subprocess",
-        help="Modo de IPC (padrão: subprocess).",
+        default=IPC_MODE,
+        help=f"Modo de IPC (padrão: {IPC_MODE}).",
     )
     parser.add_argument(
         "--stockfish-path", default=STOCKFISH_PATH,
@@ -850,12 +1336,55 @@ Exemplos de uso:
         help="Tempo de cálculo do Stockfish em segundos (padrão: 1.0).",
     )
     parser.add_argument(
-        "--token", default=LICHESS_TOKEN,
-        help="Token OAuth2 do Lichess (modo lichess).",
+        "--token", default=None,
+        help="Token OAuth2 do Lichess, escopo 'board:play' (modo lichess). "
+             "Fica visível em 'ps' e no histórico do shell — prefira "
+             "--token-file ou a variável CHESS_LICHESS_TOKEN.",
+    )
+    parser.add_argument(
+        "--token-file", metavar="ARQUIVO", default=None,
+        help="Lê o token de um arquivo (primeira linha não vazia; linhas "
+             "iniciadas por '#' são ignoradas). Sem esta opção, são "
+             "procurados: $CHESS_LICHESS_TOKEN, $CHESS_LICHESS_TOKEN_FILE e "
+             + ", ".join(str(p) for p in DEFAULT_TOKEN_FILES) + ".",
+    )
+    parser.add_argument(
+        "--lichess-ai", type=int, choices=range(1, 9), metavar="{1-8}",
+        default=None,
+        help="Joga contra a IA do Lichess no nível indicado, em vez de "
+             "procurar um humano. Exige também o escopo 'challenge:write'.",
+    )
+    parser.add_argument(
+        "--lichess-challenge", metavar="USUARIO", default=None,
+        help="Desafia uma conta específica, em vez de procurar um oponente "
+             "qualquer. O desafio aparece para o outro usuário aceitar. "
+             "Exige o escopo 'challenge:write'.",
+    )
+    parser.add_argument(
+        "--lichess-game", metavar="ID", default=None,
+        help="Acompanha uma partida específica já em andamento na conta.",
+    )
+    parser.add_argument(
+        "--lichess-rated", action="store_true",
+        help="Procura partida ranqueada (padrão: casual).",
+    )
+    parser.add_argument(
+        "--lichess-time", type=int, default=LICHESS_TIME_MINUTES,
+        help=f"Tempo inicial em minutos (padrão: {LICHESS_TIME_MINUTES}).",
+    )
+    parser.add_argument(
+        "--lichess-increment", type=int, default=LICHESS_INCREMENT,
+        help=f"Incremento por jogada em segundos (padrão: {LICHESS_INCREMENT}).",
+    )
+    parser.add_argument(
+        "--lichess-timeout", type=float, default=180.0,
+        help="Tempo máximo de espera por um oponente, em segundos "
+             "(padrão: 180).",
     )
     parser.add_argument(
         "--flip", action="store_true",
-        help="Inverte o tabuleiro (pretas embaixo).",
+        help="Inverte o tabuleiro. Por padrão ele é desenhado da perspectiva "
+             "do jogador físico (a cor de --color fica embaixo).",
     )
     parser.add_argument(
         "--no-gui", action="store_true",
@@ -888,17 +1417,34 @@ Exemplos de uso:
         else PlayerColor.BLACK
     )
 
+    lichess_token, token_origin = _resolve_token(args, parser)
+    if game_mode == GameMode.LICHESS:
+        logger.info("Token do Lichess lido de: %s", token_origin)
+        _check_time_control(args, parser)
+
     # Cria e executa a aplicação
-    app = ChessApplication(
-        mode=game_mode,
-        player_color=player_color,
-        ipc_mode=args.ipc,
-        stockfish_path=args.stockfish_path,
-        stockfish_time=args.stockfish_time,
-        lichess_token=args.token,
-        no_gui=args.no_gui,
-        flip_board=args.flip,
-    )
+    try:
+        app = ChessApplication(
+            mode=game_mode,
+            player_color=player_color,
+            ipc_mode=args.ipc,
+            stockfish_path=args.stockfish_path,
+            stockfish_time=args.stockfish_time,
+            lichess_token=lichess_token,
+            lichess_token_origin=token_origin,
+            lichess_game_id=args.lichess_game,
+            lichess_ai_level=args.lichess_ai,
+            lichess_challenge_user=args.lichess_challenge,
+            lichess_rated=args.lichess_rated,
+            lichess_time=args.lichess_time,
+            lichess_increment=args.lichess_increment,
+            lichess_timeout=args.lichess_timeout,
+            no_gui=args.no_gui,
+            flip_board=args.flip,
+        )
+    except LichessError as exc:
+        parser.error(str(exc))
+        return
 
     app.run()
 

@@ -42,6 +42,17 @@ class GameState:
         self.last_move: Optional[chess.Move] = None
         self._message: str = ""
 
+    def set_player_color(self, player_color: PlayerColor) -> None:
+        """Redefine a cor do jogador físico.
+
+        Necessário no modo Lichess: quem decide a cor é o servidor, e ela só
+        é conhecida quando a partida começa.
+        """
+        self.player_color = player_color
+        self._player_chess_color = (
+            chess.WHITE if player_color == PlayerColor.WHITE else chess.BLACK
+        )
+
     @property
     def fen(self) -> str:
         """Retorna a representação FEN da posição atual."""
@@ -231,9 +242,18 @@ class GameState:
         logger.info("Movimento desfeito: %s", move.uci())
         return move
 
-    def reset(self) -> None:
-        """Reinicia o jogo para a posição inicial."""
-        self.board.reset()
+    def reset(self, fen: Optional[str] = None) -> None:
+        """Reinicia o jogo.
+
+        Args:
+            fen: Posição inicial. Se None, usa a posição padrão. O modo
+                Lichess passa o `initialFen` quando a partida não começa da
+                posição inicial.
+        """
+        if fen:
+            self.board.set_fen(fen)
+        else:
+            self.board.reset()
         self.move_history.clear()
         self.last_move = None
         self._message = ""

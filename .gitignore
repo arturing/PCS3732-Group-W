@@ -94,3 +94,7 @@ htmlcov/
 .env
 .env.*
 !.env.example
+
+# Credenciais locais (token da Board API do Lichess)
+.lichess_token
+*.token

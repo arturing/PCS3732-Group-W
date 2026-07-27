@@ -88,15 +88,25 @@ class IPCReader:
         mode: str = IPC_MODE,
         pipe_path: str = PIPE_PATH,
         process_path: str = C_PROCESS_PATH,
+        process_args: Optional[list[str]] = None,
     ):
         self._mode = mode
         self._pipe_path = pipe_path
         self._process_path = process_path
+        self._process_args = list(process_args or [])
         self._queue: Queue[dict[str, int]] = Queue()
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._process: Optional[subprocess.Popen] = None
         self._source = None  # file-like object para leitura
+
+    def set_process_args(self, args: list[str]) -> None:
+        """Define os argumentos do subprocesso. Só vale antes de `start()`.
+
+        Usado para informar ao mock a cor das peças físicas, que no modo
+        Lichess só é conhecida depois que a partida começa.
+        """
+        self._process_args = list(args)
 
     def start(self) -> None:
         """Inicia a leitura de eventos em background."""
@@ -129,7 +139,7 @@ class IPCReader:
         usuário possa digitar jogadas interativamente. No Linux, o
         stdin/stderr são herdados do processo pai (terminal).
         """
-        cmd = [sys.executable, self._process_path]
+        cmd = [sys.executable, self._process_path, *self._process_args]
         logger.info("Iniciando subprocesso: %s", " ".join(cmd))
 
         popen_kwargs = dict(

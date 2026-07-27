@@ -35,6 +35,19 @@ mock/
 └── gui_mock.py          # GUI do mock: matriz 8×8 de botões (reed switches)
 ```
 
+```
+tests/
+├── fake_lichess.py      # Servidor falso da Board API (testes sem token/rede)
+├── test_lichess.py      # Modo Lichess: cliente e aplicação
+├── test_challenge.py    # Desafios enviados e recebidos
+├── test_stockfish_loop.py  # Regressão do loop principal
+└── run_all.py           # Roda todas as suítes
+```
+
+```bash
+python tests/run_all.py
+```
+
 ## Instalação
 
 ### Pré-requisitos
@@ -89,19 +102,153 @@ Opções:
   --ipc {subprocess,stdin,pipe} Modo de IPC (padrão: subprocess)
   --stockfish-path PATH        Caminho do Stockfish
   --stockfish-time SECONDS     Tempo de cálculo (padrão: 1.0)
-  --token TOKEN                Token Lichess (modo lichess)
+  --token TOKEN                Token Lichess (evite: fica visível em `ps`)
+  --token-file ARQUIVO         Lê o token de um arquivo
+  --lichess-ai {1-8}           Joga contra a IA do Lichess nesse nível
+  --lichess-challenge USUARIO  Desafia uma conta específica
+  --lichess-game ID            Acompanha uma partida já em andamento
+  --lichess-rated              Procura partida ranqueada (padrão: casual)
+  --lichess-time MINUTOS       Tempo inicial (padrão: 10)
+  --lichess-increment SEGUNDOS Incremento por jogada (padrão: 0)
+  --lichess-timeout SEGUNDOS   Espera máxima por um oponente (padrão: 180)
   --flip                       Inverte o tabuleiro
   --no-gui                     Sem interface gráfica
   --log-level LEVEL            Nível de log
 ```
 
+O tabuleiro é desenhado da perspectiva do jogador físico: com `--color black`
+as pretas já ficam embaixo, e `--flip` inverte essa orientação padrão.
+
 ### Jogar contra Lichess (online)
 
-1. Obtenha um token de API em https://lichess.org/account/oauth/token
-2. Execute:
+#### 1. Token de API
+
+Crie um token em https://lichess.org/account/oauth/token/create com os escopos:
+
+| Escopo | Para quê |
+|--------|----------|
+| `board:play` | **Obrigatório** — jogar pela Board API |
+| `challenge:write` | Só para `--lichess-ai` (criar o desafio) |
+
+#### Onde guardar o token
+
+O token é uma credencial da sua conta: passá-lo em `--token` o deixa no
+histórico do shell e visível para qualquer processo via `ps`. Prefira um
+arquivo:
+
 ```bash
-python -m app.main --mode lichess --token lip_seu_token
+# Na raiz de projeto_final/ — já está no .gitignore
+echo 'lip_seu_token' > .lichess_token
+chmod 600 .lichess_token
+
+python -m app.main --mode lichess --lichess-ai 3   # acha o token sozinho
 ```
+
+O arquivo aceita comentários, o que ajuda quando há mais de uma conta:
+
+```
+# conta de testes do grupo W
+lip_seu_token
+```
+
+A busca acontece nesta ordem — a primeira fonte que tiver um token vence:
+
+| Ordem | Fonte |
+|-------|-------|
+| 1 | `--token TOKEN` |
+| 2 | `--token-file ARQUIVO` |
+| 3 | `$CHESS_LICHESS_TOKEN` |
+| 4 | `$CHESS_LICHESS_TOKEN_FILE` (caminho de um arquivo) |
+| 5 | `projeto_final/.lichess_token` |
+| 6 | `~/.config/chess-board/lichess_token` |
+
+Um `--token-file` que não puder ser lido é erro, não uma volta silenciosa
+para as outras fontes — senão a partida poderia acabar na conta errada. A
+aplicação também avisa se o arquivo estiver legível por outros usuários.
+
+> A Board API é para **contas humanas**. Não use uma conta marcada como BOT, e
+> não jogue partidas ranqueadas enquanto estiver testando.
+
+#### 2. Jogar
+
+```bash
+# Contra a IA do Lichess (não precisa de segundo jogador — melhor para testar)
+python -m app.main --mode lichess --lichess-ai 3
+
+# Desafiando uma conta específica (jogar contra alguém combinado)
+python -m app.main --mode lichess --lichess-challenge nome_do_usuario
+
+# Procurando um oponente humano qualquer (partida casual 10+0)
+python -m app.main --mode lichess --lichess-time 10 --lichess-increment 0
+
+# Acompanhando uma partida que já está em andamento na conta
+python -m app.main --mode lichess --lichess-game AbCdEfGh
+```
+
+#### Controles de tempo aceitos
+
+A Board API **só aceita rapid ou mais lento**. O Lichess estima a duração de
+uma partida em `limite_em_segundos + 40 × incremento` (40 lances) e recusa
+qualquer coisa abaixo de **480 s**, respondendo
+`{"global":["Invalid time control"]}`. Faz sentido: não dá para operar um
+tabuleiro físico em ritmo de blitz.
+
+| Controle | Estimativa | |
+|----------|-----------|---|
+| `10+0` | 600 s | aceito (padrão da aplicação) |
+| `8+0` | 480 s | aceito (limite exato) |
+| `5+5` | 500 s | aceito |
+| `6+3` | 480 s | aceito |
+| `5+3` | 420 s | **recusado** |
+| `7+0` | 420 s | **recusado** |
+| `3+0` | 180 s | **recusado** |
+
+A aplicação verifica isso antes de conectar e explica o que usar no lugar,
+em vez de deixar o 400 do servidor aparecer sem contexto.
+
+Sem nenhuma dessas opções, a aplicação primeiro procura uma partida já em
+aberto na conta (dá para começar a partida no site e continuar no tabuleiro
+físico) e, se não houver nenhuma, publica um *seek* e espera um oponente até
+`--lichess-timeout`.
+
+#### Jogar contra uma segunda conta sua
+
+Duas direções, as duas funcionam:
+
+**Do tabuleiro para o navegador** — a aplicação cria o desafio:
+
+```bash
+python -m app.main --mode lichess --lichess-challenge sua_outra_conta
+```
+
+O log imprime a URL do desafio; aceite-o logado na outra conta e a partida
+começa. Se você fechar a aplicação antes de o desafio ser aceito, ele é
+cancelado automaticamente — nada fica pendurado na conta.
+
+**Do navegador para o tabuleiro** — desafie a conta do tabuleiro pelo site
+com a aplicação já rodando (`python -m app.main --mode lichess`). Enquanto
+espera uma partida, ela **aceita automaticamente** os desafios recebidos e
+começa a jogar. Desafios que a própria conta enviou são ignorados.
+
+> Com `--lichess-challenge` dá para escolher a cor (`--color`), o que o seek
+> não permite. Use contas diferentes: o Lichess não deixa uma conta desafiar
+> a si mesma.
+
+#### 3. Durante a partida
+
+- **A cor quem decide é o Lichess.** `--color` só é respeitado com
+  `--lichess-ai`; procurando um humano, o pareamento sorteia a cor (o
+  endpoint de seek nem aceita escolha). Se vier a cor oposta, a aplicação se
+  reconfigura sozinha — tabuleiro, orientação da GUI e mock — e avisa no log,
+  mas o tabuleiro **físico** precisa ser remontado com as peças dessa cor.
+- As jogadas do oponente chegam pelo stream e viram instruções físicas: uma
+  captura vira "remova a peça de d5".
+- Se o Lichess recusar uma jogada, ela não entra no tabuleiro virtual e a
+  aplicação pede para desfazê-la no tabuleiro físico.
+- Desistência, tempo esgotado e empate são reportados pelo servidor e
+  encerram a partida na tela.
+- Ofertas de empate e desistência **não** são feitas pelo tabuleiro: use o
+  site do Lichess (a oferta recebida aparece no log).
 
 ### Usar o Mock diretamente
 
@@ -287,6 +434,11 @@ etapas](#roque-em-duas-etapas).
 | `CHESS_STOCKFISH_DEPTH` | Profundidade de busca | (sem limite) |
 | `CHESS_STOCKFISH_SKILL` | Nível de habilidade (0-20) | (não configurado) |
 | `CHESS_LICHESS_TOKEN` | Token OAuth2 Lichess | (vazio) |
+| `CHESS_LICHESS_TOKEN_FILE` | Arquivo de onde ler o token | `.lichess_token` |
+| `CHESS_LICHESS_API_URL` | URL base da API do Lichess | `https://lichess.org` |
+| `CHESS_LICHESS_TIME` | Tempo inicial do seek (min) | `10` |
+| `CHESS_LICHESS_INCREMENT` | Incremento do seek (s) | `0` |
+| `CHESS_C_PROCESS` | Executável do hardware (ou mock) | `mock/hardware_mock.py` |
 | `CHESS_BOARD_SIZE` | Tamanho do tabuleiro (px) | `640` |
 | `CHESS_MOCK_BOARD_SIZE` | Tamanho da matriz de botões do mock (px) | `560` |
 
