@@ -49,6 +49,8 @@ CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 Makefile
+# Escrito à mão, não gerado pelo CMake
+!projeto_final/Makefile
 install_manifest.txt
 compile_commands.json
 

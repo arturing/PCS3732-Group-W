@@ -58,8 +58,12 @@ python tests/run_all.py
 ### Instalar dependências
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt     # ou: make deps
 ```
+
+Com Nix, nada disso é preciso: `nix develop` (na raiz do repositório) já traz
+Python com as dependências, o Stockfish e as fontes das peças — veja
+[Com o Nix](#com-o-nix).
 
 ### Instalar Stockfish
 
@@ -76,10 +80,88 @@ set CHESS_STOCKFISH_PATH=C:\caminho\para\stockfish.exe
 
 ## Uso
 
+### Atalhos do Makefile
+
+Todos os modos de execução têm um alvo no `Makefile` da pasta `projeto_final/`.
+`make` sozinho lista os alvos com os valores correntes das variáveis:
+
+```bash
+cd projeto_final
+make
+```
+
+| Alvo | O que faz |
+|------|-----------|
+| `make stockfish` | Partida offline contra o Stockfish (não precisa de rede nem de token) |
+| `make lichess-ai` | Partida contra a IA do Lichess (nível `LICHESS_LEVEL`, padrão 3) |
+| `make random-sir` | Desafia a conta `random-sir` no Lichess |
+| `make lichess-user OPPONENT=fulano` | Desafia a conta informada |
+| `make lichess-seek` | Publica um *seek* e espera um oponente humano qualquer |
+| `make lichess-game GAME=AbCdEfGh` | Retoma uma partida já em andamento na conta |
+| `make mock` | Roda só o mock do hardware (sem a aplicação) |
+| `make test` | Roda `tests/run_all.py` |
+| `make deps` | `pip install -r requirements.txt` |
+| `make shell` | Abre o devShell do Nix (`make shell-classic` para `nix-shell`) |
+| `make clean` | Remove `__pycache__` e caches de ferramentas |
+
+Os alvos do Lichess verificam antes se há um token acessível e falham com a
+instrução de como criá-lo — em vez de abrir a janela e só então tomar um 401.
+
+#### Variáveis
+
+Qualquer alvo aceita variáveis na linha de comando, que é como o `make` passa
+argumentos:
+
+```bash
+make stockfish COLOR=black STOCKFISH_TIME=2.0
+make lichess-ai LICHESS_LEVEL=6 LICHESS_TIME=15
+make lichess-user OPPONENT=fulano COLOR=black
+make mock MOCK_MODE=interactive
+```
+
+| Variável | Padrão | Para quê |
+|----------|--------|----------|
+| `COLOR` | `white` | Cor das peças físicas (`white`/`black`) |
+| `LOG_LEVEL` | `INFO` | Nível de log |
+| `ARGS` | — | Opções extras repassadas direto ao `app.main` |
+| `STOCKFISH_TIME` | `1.0` | Segundos de cálculo por lance |
+| `STOCKFISH_PATH` | — | Binário do Stockfish (vazio: `$CHESS_STOCKFISH_PATH` ou o do `PATH`) |
+| `LICHESS_LEVEL` | `3` | Nível da IA do Lichess (1–8) |
+| `LICHESS_TIME` | `10` | Minutos iniciais |
+| `LICHESS_INC` | `0` | Incremento por lance, em segundos |
+| `LICHESS_TIMEOUT` | `180` | Espera máxima por um oponente, em segundos |
+| `OPPONENT` | — | Conta a desafiar em `make lichess-user` |
+| `GAME` | — | Id da partida em `make lichess-game` |
+| `MOCK_MODE` | `gui` | Modo do mock em `make mock` |
+| `PYTHON` | `python3` | Interpretador usado |
+| `USE_NIX` | — | `USE_NIX=1` roda o alvo dentro do devShell do flake |
+
+O `ARGS` cobre o que não tem variável própria — as opções da
+[lista completa](#opções-de-linha-de-comando) continuam todas disponíveis:
+
+```bash
+make stockfish ARGS="--no-gui --ipc stdin"
+```
+
+#### Com o Nix
+
+O repositório tem um `flake.nix` com Python (mais `python-chess`, `pygame` e
+`requests`), Stockfish, `make` e a configuração de fontes que a GUI precisa
+para desenhar as peças. Duas formas de usar:
+
+```bash
+# Entrar no ambiente uma vez e trabalhar dentro dele
+nix develop        # ou: nix-shell, sem os experimental-features de flakes
+cd projeto_final && make stockfish
+
+# Ou rodar um alvo isolado dentro do ambiente
+make stockfish USE_NIX=1
+```
+
 ### Jogar contra Stockfish (com mock do hardware)
 
 ```bash
-python -m app.main --mode stockfish
+python -m app.main --mode stockfish     # ou: make stockfish
 ```
 
 O mock do hardware é aberto automaticamente numa segunda janela: uma matriz
@@ -174,15 +256,19 @@ aplicação também avisa se o arquivo estiver legível por outros usuários.
 ```bash
 # Contra a IA do Lichess (não precisa de segundo jogador — melhor para testar)
 python -m app.main --mode lichess --lichess-ai 3
+# make lichess-ai
 
 # Desafiando uma conta específica (jogar contra alguém combinado)
 python -m app.main --mode lichess --lichess-challenge nome_do_usuario
+# make lichess-user OPPONENT=nome_do_usuario   (ou: make random-sir)
 
 # Procurando um oponente humano qualquer (partida casual 10+0)
 python -m app.main --mode lichess --lichess-time 10 --lichess-increment 0
+# make lichess-seek
 
 # Acompanhando uma partida que já está em andamento na conta
 python -m app.main --mode lichess --lichess-game AbCdEfGh
+# make lichess-game GAME=AbCdEfGh
 ```
 
 #### Controles de tempo aceitos
